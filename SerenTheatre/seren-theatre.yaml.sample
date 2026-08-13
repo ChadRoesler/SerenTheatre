@@ -1,0 +1,37 @@
+# SerenTheatre - the room where you watch the thing being made.
+#
+# Copy to ~/seren-theatre/seren-theatre.yaml, or point at it with
+#   seren-theatre --config /path/to/seren-theatre.yaml
+# or $SEREN_THEATRE_CONFIG. Env vars beat this file; this file beats defaults.
+#
+# For a one-off with no file at all:
+#   SEREN_THEATRE_STAGE=/mnt/nvme/fraunkensteinLab python -m seren_theatre
+
+server:
+  # 127.0.0.1 on purpose, like Margin and unlike Memory. Training logs carry
+  # absolute paths, hostnames and the occasional corpus snippet. Widen it
+  # yourself, deliberately, if you mean to put that on the LAN.
+  host: 127.0.0.1
+  port: 7427
+
+# How much of the tail of each log to read per poll. Training logs are
+# megabytes of carriage-returned progress bars and only the end is ever
+# interesting. The dashboard must never be the reason the box is busy.
+tail_bytes: 262144
+refresh_seconds: 5
+
+stages:
+  - name: FraunkensteinsLab
+    path: /mnt/nvme/fraunkensteinLab
+    # Anything you redirect a run into. Newest first in the viewer.
+    logs:
+      - "*.log"
+    # Per-rung artifact roots. The defaults match the ladder layout:
+    # dryrun_0.5B/, fraunkenstein_agent_1.5B/, fraunkenstein_agent_14B/ ...
+    rungs:
+      - "dryrun_*"
+      - "*_agent_*"
+
+  # A stage is just a directory - nothing needs instrumenting to be watched.
+  # - name: Lyceum
+  #   path: ~/seren-lyceum/runs

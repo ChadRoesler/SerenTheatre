@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/.github/">
+    <File Path=".github/dependabot.yml" />
+  </Folder>
+  <Folder Name="/.github/ISSUE_TEMPLATE/">
+    <File Path=".github/ISSUE_TEMPLATE/bug_report.yml" />
+    <File Path=".github/ISSUE_TEMPLATE/config.yml" />
+  </Folder>
+  <Folder Name="/.github/workflows/">
+    <File Path=".github/workflows/release.yml" />
+  </Folder>
+  <Project Path="SerenTheatre/SerenTheatre.pyproj" Type="888888a0-9f3d-457c-b088-3a5042f75d52" Id="01367d4e-9473-4ffe-8ce1-a5a170d81010">
+    <Build Project="false" />
+  </Project>
+</Solution>

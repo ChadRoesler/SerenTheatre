@@ -1,0 +1,22 @@
+<!-- Two .view panels the shell's showTab() toggles.
+
+     #rehearsal-banner is the loud twin of the header pill; #error-slot carries
+     connect errors. Everything else is painted by scripts.js from /api/state. -->
+<div id="rehearsal-banner" class="rehearsal" style="display:none">
+    ⚠ <b>REHEARSAL</b> — every number below is fabricated. Nothing here is a reading.
+</div>
+<div id="error-slot"></div>
+
+<section class="view" id="stages">
+    <!-- An empty room is a TRUE reading, not an error, and it gets said in
+         words rather than left as a blank panel that looks like a failure. -->
+    <div id="stages-body"></div>
+</section>
+
+<section class="view" id="logs">
+    <div class="toolbar">
+        <span class="hint" id="logs-hint">run logs · newest first · tail only</span>
+        <div class="spacer"></div>
+    </div>
+    <div id="logs-body"></div>
+</section>
