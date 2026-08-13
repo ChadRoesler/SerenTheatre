@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seren-theatre"
+dynamic = ["version"]
+description = "Watch a model being made. Read-only viewer over training logs and artifacts."
+license = "GPL-3.0-only"
+requires-python = ">=3.10"
+authors = [{ name = "Chad Roesler" }]
+readme = "README.md"
+keywords = ["seren", "dashboard", "training", "moe", "fastapi", "viewer"]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+    # The shared Seren core - UI shell, auth, config, update checking. Taken as
+    # a CORE dep for the same reason Margin took it: a stale viewer that reports
+    # confidently on a run is exactly the bad time update checking prevents.
+    "seren-meninges>=2.2.0,<3",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "httpx>=0.26",   # for fastapi TestClient
+]
+# Kept as an EMPTY alias, matching Margin. Update checking is CORE in
+# seren-meninges and meninges is a core dep here, so there is nothing left to
+# install. The name stays because the Starwright installers pass --updates and
+# an unknown extra only earns a warning that teaches people to ignore warnings.
+updates = []
+# STAGEHAND - the half that does the work.
+#
+# Opt-in, and structurally so: the viewer never imports it, the service never
+# grows a route for it, and Theatre is completely functional without it.
+# Watching a run has never required being able to start one, which is why this
+# is an extra and not a dependency. Mandate is not ethos.
+#
+# All it pulls is the ms-moe CLI (about a megabyte, no torch). The heavy
+# machinery lives in whatever venv the pipeline trains in - stagehand forks a
+# command, it does not import a trainer.
+stagehand = [
+    "ms-moe>=0.1",
+]
+
+[project.scripts]
+seren-theatre = "seren_theatre.__main__:main"
+# A SIBLING COMMAND, deliberately not a route. Starting a build is a write, and
+# Theatre exposes no write surface - see the docstring in stagehand.py and
+# test_no_route_can_write. A stagehand is not on stage.
+seren-theatre-stagehand = "seren_theatre.stagehand:main"
+
+[project.urls]
+Homepage = "https://github.com/ChadRoesler/SerenTheatre"
+Repository = "https://github.com/ChadRoesler/SerenTheatre"
+"Bug Tracker" = "https://github.com/ChadRoesler/SerenTheatre/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["seren_theatre*"]
+
+# The viewer pack. Without this the .html/.css/.js are simply ABSENT from the
+# wheel - Python packaging ships modules, not data, unless told - and /viewer
+# 500s on an installed copy while working perfectly from the source checkout
+# you tested in. The classic package-data gotcha; same declaration Observatory
+# and Probe carry.
+[tool.setuptools.package-data]
+seren_theatre = ["viewer/ui/*.html", "viewer/ui/*.css", "viewer/ui/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools_scm]
+# .git is one level above pyproject.toml (repo root, not the SerenTheatre subdir)
+root = ".."
+version_scheme = "release-branch-semver"
+version_file = "seren_theatre/_version.py"
+tag_regex = "^v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+.*)$"
+fallback_version = "0.0.0.dev0"

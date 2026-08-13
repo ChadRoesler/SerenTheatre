@@ -1,0 +1,160 @@
+/* SerenTheatre flavour over the SerenMeninges baseplate.
+ *
+ * The shell owns the header, tabbar, token modal, .view show/hide and the base
+ * tokens (--text, --font, and --accent from render_from_dir). Everything here
+ * is the room itself.
+ *
+ * ON THE ACCENT. Theatre's accent is #000000 - the house lights down, the one
+ * service in the constellation that doesn't get a colour. That is a lovely
+ * idea and a terrible border colour on a dark panel, so it is used where black
+ * READS as deliberate rather than invisible: the well behind the stage rows is
+ * pure accent, and the room sits ON it. The joke stays intact and you can
+ * still see the furniture.
+ */
+
+:root {
+    --bg: #101014;
+    --panel: #17171d;
+    --panel-2: #1d1d25;
+    --line: #2b2b36;
+    --muted: #8b8b99;
+    --faint: #63636f;
+    --ok: #7fd88f;
+    --warn: #f5d76e;
+    --bad: #ff6e8a;
+    --run: #5bc8e8;
+    --idle: #5a5a66;
+}
+
+html {
+    background: radial-gradient(1100px 560px at 70% -14%, #1b1b24 0%, var(--bg) 58%) no-repeat fixed;
+    background-color: var(--bg);
+}
+
+body { font-size: 14px; }
+
+/* -- rehearsal marking --------------------------------------------------- */
+.rehearsal {
+    background: #3a2a00;
+    color: var(--warn);
+    border-bottom: 1px solid #6a4d00;
+    padding: 8px 18px;
+    letter-spacing: .06em;
+}
+#rehearsal-pill { background: #3a2a00; color: var(--warn); }
+
+/* -- cards --------------------------------------------------------------- */
+.card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+}
+.card > h3 {
+    font-size: 12px;
+    margin: 0 0 4px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+.card .sub { color: var(--faint); font-size: 12px; margin-bottom: 12px; }
+
+.hint { color: var(--faint); font-size: 12px; }
+.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.spacer { flex: 1; }
+.err {
+    background: #2a1116; border: 1px solid #5c2230; color: var(--bad);
+    border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;
+}
+
+/* An empty room said in words. Not an error state. */
+.empty {
+    color: var(--faint);
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    padding: 22px;
+    text-align: center;
+}
+.empty b { color: var(--muted); }
+
+/* -- the stage ladder ---------------------------------------------------- */
+/* The accent well. On Theatre this is pure black, which is the point. */
+.ladder {
+    background: var(--accent, #000);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px;
+}
+.step {
+    display: grid;
+    grid-template-columns: 18px 1fr max-content;
+    gap: 12px;
+    align-items: center;
+    padding: 7px 10px;
+    border-radius: 6px;
+}
+.step + .step { margin-top: 2px; }
+.step:nth-child(odd) { background: rgba(255, 255, 255, .022); }
+.step .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--idle); justify-self: center;
+}
+.step .label { color: var(--text); }
+.step .meta { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.step .note { grid-column: 2 / -1; color: var(--warn); font-size: 12px; }
+
+.step.done  .dot { background: var(--ok); }
+.step.skipped .dot { background: var(--idle); box-shadow: inset 0 0 0 2px var(--ok); }
+.step.skipped .label { color: var(--muted); }
+.step.failed .dot { background: var(--bad); }
+.step.refused .dot { background: var(--warn); }
+.step.pending .label { color: var(--faint); }
+.step.running .dot {
+    background: var(--run);
+    animation: pulse 1.6s ease-in-out infinite;
+}
+.step.running .label { color: #fff; }
+/* An unrecognised status from a newer writer. Never painted as "pending" -
+   that would be inventing a reading. */
+.step.unknown .dot { background: transparent; box-shadow: inset 0 0 0 2px var(--warn); }
+
+@keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+@media (prefers-reduced-motion: reduce) {
+    .step.running .dot { animation: none; }
+}
+
+/* -- badges -------------------------------------------------------------- */
+.badge {
+    border: 1px solid var(--line); border-radius: 99px;
+    padding: 1px 9px; font-size: 11px; color: var(--muted);
+}
+.badge.running  { color: var(--run); border-color: #2b5566; }
+.badge.finished { color: var(--ok); border-color: #2c5537; }
+.badge.failed   { color: var(--bad); border-color: #5c2230; }
+.badge.stalled  { color: var(--warn); border-color: #5c4a1e; }
+.badge.disk     { color: var(--faint); }
+
+/* Refusals. Deliberately prominent - a recipe field that was ignored is
+   exactly what the person reading this six hours later needs to see. */
+.refusals {
+    background: #2a2410; border: 1px solid #5c4a1e;
+    border-radius: 8px; padding: 10px 14px; margin-top: 12px;
+}
+.refusals h4 { margin: 0 0 6px; font-size: 12px; color: var(--warn);
+    letter-spacing: .08em; text-transform: uppercase; }
+.refusals li { color: var(--muted); font-size: 12px; margin: 3px 0; }
+
+/* -- logs ---------------------------------------------------------------- */
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; }
+.kv dt { color: var(--faint); font-size: 12px; }
+.kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.bar { height: 6px; background: #23232c; border-radius: 3px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--run); }
+
+.warnlist { margin: 10px 0 0; padding-left: 18px; }
+.warnlist li { color: var(--warn); font-size: 12px; }
+.mile { color: var(--ok); font-size: 12px; }
+
+code { color: var(--muted); font-size: 12px; }

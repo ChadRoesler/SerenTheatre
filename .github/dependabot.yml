@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # GitHub Actions used in .github/workflows/*. Dependabot rewrites the pinned
+  # SHA (keeping the `# vX.Y.Z` comment in sync) when the action releases.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+
+  # Python deps for the theatre package (pyproject lives in SerenTheatre/).
+  - package-ecosystem: "pip"
+    directory: "/SerenTheatre"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
