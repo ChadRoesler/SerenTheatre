@@ -14,8 +14,10 @@ cannot drift apart. That failure is not theoretical - the `seren/port-map` fact
 in Loci records Workbench's code saying 7425 while its installer said 7444, so
 an installed node answered where the docs did not. One constant, two readers.
 
-The shell installer (seren-theatre-setup.sh --describe) still has to agree with
-this by hand. Check them against each other rather than trusting either.
+A shell installer for this service exists in the SerenStarwright repo and has
+to agree with these values. Nothing HERE checks that, deliberately: Theatre
+does not depend on Starwright and does not look for it. If you change a value
+in this file, the installer is the other place to change.
 """
 from __future__ import annotations
 
