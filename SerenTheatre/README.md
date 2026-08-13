@@ -61,7 +61,10 @@ the payload. It is **never** a fallback for an empty stage — an empty room is 
 true reading, and a dashboard that invents data rather than admit it has none is
 worse than no dashboard.
 
-### Install with the installer
+### Install with the installer (optional)
+
+There's a `seren-theatre-setup.sh` in the **SerenStarwright** repo that does the
+venv, config, launcher and optional autostart for you:
 
 ```bash
 bash seren-theatre-setup.sh              # build from the repo checkout
@@ -69,8 +72,9 @@ bash seren-theatre-setup.sh --service    # + autostart
 bash seren-theatre-setup.sh --stage /mnt/nvme/fraunkensteinLab
 ```
 
-Or just let SerenStarwright find it — the installer answers `--describe`, so it
-shows up in the grid with no edit to Starwright.
+It answers `--describe`, so Theatre appears in Starwright's grid with no edit to
+Starwright. None of that is required — `pip install seren-theatre` is the whole
+story if you'd rather not.
 
 ---
 
@@ -197,11 +201,16 @@ pip install -e ".[test]"
 pytest
 ```
 
-The test suite includes a cross-check that the shell installer's `--describe`
-and the Python module's `--describe` report the same name, port, group and
-accent. Both exist on purpose — Starwright asks the installer, an operator asks
-the service — and two sources that can disagree are only useful if something
-compares them. Something now does.
+Theatre knows nothing about SerenStarwright, on purpose. The installer lives
+in that repo and this one doesn't reach into it — a viewer that needs a sibling
+checkout to run its own tests isn't standalone, and `requires: []` should mean
+something.
+
+`--describe` is still tested here, thoroughly: the payload's keys, its types,
+that it stays one line of JSON, that it imports nothing heavier than the
+standard library, and that it creates nothing on disk. What's *not* tested here
+is agreement with the shell installer's `--describe`. That comparison is real
+and worth having; it just belongs on the side that owns the installer. Something now does.
 
 ---
 
