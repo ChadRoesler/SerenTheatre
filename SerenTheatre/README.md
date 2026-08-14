@@ -50,17 +50,6 @@ going in some directory and you want to see it. For anything longer-lived, copy
 `seren-theatre.yaml.sample` to `~/seren-theatre/seren-theatre.yaml` and list your
 stages there.
 
-Want to judge the layout with no run in flight?
-
-```bash
-python -m seren_theatre --demo
-```
-
-Every number it serves is fabricated, and it says so loudly on the page and in
-the payload. It is **never** a fallback for an empty stage — an empty room is a
-true reading, and a dashboard that invents data rather than admit it has none is
-worse than no dashboard.
-
 ### Install with the installer (optional)
 
 There's a `seren-theatre-setup.sh` in the **SerenStarwright** repo that does the

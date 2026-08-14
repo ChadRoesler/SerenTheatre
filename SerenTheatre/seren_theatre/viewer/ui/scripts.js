@@ -252,10 +252,6 @@ async function load() {
         const state = await api('/api/state');
         clearError();
 
-        const demo = state.demo === true;
-        $('rehearsal-banner').style.display = demo ? 'block' : 'none';
-        $('rehearsal-pill').style.display = demo ? '' : 'none';
-
         const rungs = state.stages.flatMap((s) => s.rungs || []);
         const logs = state.stages.flatMap((s) => s.logs || []);
         const running = rungs.filter(

@@ -30,7 +30,6 @@
   <ItemGroup>
     <Compile Include="seren_theatre\__init__.py" />
     <Compile Include="seren_theatre\__main__.py" />
-    <Compile Include="seren_theatre\_demo.py" />
     <Compile Include="seren_theatre\_diag.py" />
     <Compile Include="seren_theatre\app.py" />
     <Compile Include="seren_theatre\config.py" />
