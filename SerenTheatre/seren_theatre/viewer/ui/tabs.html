@@ -1,7 +1,12 @@
 <!-- Shell contract: class="tab" data-tab=<id>, matching .view sections in
      body.html. The shell styles these and auto-activates the first.
 
-     Stages leads because it is the glance - "where is the run" answered in
-     one look. Logs is the drill-down you open when Stages made you curious. -->
-<button class="tab" data-tab="stages">Stages</button>
-<button class="tab" data-tab="logs">Logs</button>
+     Stages leads because it is the glance - "where is the run" answered in one
+     look. Logs is the drill-down you open when Stages made you curious.
+
+     The COUNTS are filled in by scripts.js and they are not decoration. A tab
+     that might be empty is indistinguishable from a tab that is broken until
+     you click it and see nothing; "Logs 3" and "Logs 0" answer that from the
+     tabbar, before the click. -->
+<button class="tab" data-tab="stages">Stages <span class="tab-count" id="count-stages"></span></button>
+<button class="tab" data-tab="logs">Logs <span class="tab-count" id="count-logs"></span></button>

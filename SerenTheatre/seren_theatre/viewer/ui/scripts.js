@@ -2,20 +2,24 @@
 // The shell provides api() (same-origin, attaches the saved bearer),
 // escapeHtml(), showTab() and the 🔑 token modal. We call them.
 //
-// Theatre is READ-ONLY and localhost by default, so there is no auth dance
-// here and no action buttons to fail closed - the whole surface is GETs.
+// Theatre is READ-ONLY and localhost by default, so there is no auth dance here
+// and no action buttons to fail closed - the whole surface is GETs.
 //
-// ONE RULE THIS FILE FOLLOWS THROUGHOUT: never invent a reading. An empty
-// stage list is rendered as "the room is empty", not as a spinner. A run whose
-// manifest went quiet is rendered as "stalled", not as still running. A status
-// this viewer does not recognise is rendered as itself with a hollow marker,
-// not silently bucketed into "pending". The dashboard is a claim about
-// reality; the only failure that really matters is being confidently wrong.
+// ONE RULE THIS FILE FOLLOWS THROUGHOUT: never invent a reading. An empty stage
+// list is rendered as "the room is empty", not as a spinner. A run whose
+// manifest went quiet is "stalled", not still running. A status this viewer does
+// not recognise is rendered as itself with a hollow marker, not silently bucketed
+// into "pending". The dashboard is a claim about reality; the only failure that
+// really matters is being confidently wrong.
 
 const $ = (id) => document.getElementById(id);
 
 let TIMER = null;
 let REFRESH_MS = 5000;
+
+// Which cards the operator collapsed, by key, so a refresh every 5s does not
+// keep re-opening what they just shut. In memory only - no storage APIs.
+const COLLAPSED = new Set();
 
 function showError(html) { $('error-slot').innerHTML = `<div class="err">${html}</div>`; }
 function clearError() { $('error-slot').innerHTML = ''; }
@@ -46,6 +50,34 @@ function fmtBytes(n) {
 
 const KNOWN = ['pending', 'running', 'done', 'skipped', 'failed', 'refused'];
 
+// -- collapsible cards ------------------------------------------------------
+// Delegated, so it survives the innerHTML replacement on every poll. Keyed by
+// a stable card key rather than DOM position - a new run appearing at the top
+// must not silently collapse the one you were reading.
+
+function card(key, title, badge, sub, body, startCollapsed) {
+    const collapsed = COLLAPSED.has(key) || (startCollapsed && !COLLAPSED.has('!' + key));
+    return `<div class="card collapsible ${collapsed ? 'collapsed' : ''}" data-key="${escapeHtml(key)}">
+        <h3><span class="twisty">▾</span>${title}${badge || ''}</h3>
+        ${sub ? `<div class="sub">${sub}</div>` : ''}
+        <div class="card-body">${body}</div>
+    </div>`;
+}
+
+document.addEventListener('click', (e) => {
+    const head = e.target.closest('.card.collapsible > h3');
+    if (!head) return;
+    const el = head.parentElement;
+    const key = el.getAttribute('data-key');
+    if (el.classList.toggle('collapsed')) {
+        COLLAPSED.add(key);
+        COLLAPSED.delete('!' + key);
+    } else {
+        COLLAPSED.delete(key);
+        COLLAPSED.add('!' + key);   // an explicit re-open beats a default
+    }
+});
+
 // -- the stage ladder -------------------------------------------------------
 
 function renderLadder(m) {
@@ -55,12 +87,10 @@ function renderLadder(m) {
         // state" - two would eventually disagree, on screen.
         const cls = s.known_status === false || !KNOWN.includes(s.status)
             ? 'unknown' : s.status;
-        const right = s.status === 'running' ? fmtDur(s.elapsed)
-            : (s.status === 'done' ? fmtDur(s.elapsed) : '');
-        const note = s.note
-            ? `<div class="note">${escapeHtml(s.note)}</div>` : '';
-        const art = s.artifact
-            ? ` <code>${escapeHtml(s.artifact)}</code>` : '';
+        const right = (s.status === 'running' || s.status === 'done')
+            ? fmtDur(s.elapsed) : '';
+        const note = s.note ? `<div class="note">${escapeHtml(s.note)}</div>` : '';
+        const art = s.artifact ? ` <code>${escapeHtml(s.artifact)}</code>` : '';
         return `<div class="step ${cls}">
             <span class="dot"></span>
             <span class="label">${escapeHtml(s.label)}${art}</span>
@@ -84,12 +114,11 @@ function renderRung(r) {
     const m = r.manifest;
     if (m) {
         const badge = `<span class="badge ${m.state}">${m.state}</span>`;
-        const counts = `${m.done_count}/${m.stage_count} stages`;
         const sub = [
             m.name && escapeHtml(m.name),
             m.size && escapeHtml(m.size),
             m.recipe_id && `<code>${escapeHtml(m.recipe_id)}</code>`,
-            counts,
+            `${m.done_count}/${m.stage_count} stages`,
             `updated ${fmtAge(m.updated)}`,
         ].filter(Boolean).join(' · ');
         const stalled = m.stale
@@ -98,13 +127,11 @@ function renderRung(r) {
                ${escapeHtml(fmtDur(Date.now() / 1000 - m.updated))}. The process
                was probably killed - a stage that dies never gets to write a
                final status.</div>` : '';
-        return `<div class="card">
-            <h3>${escapeHtml(r.name)} ${badge}</h3>
-            <div class="sub">${sub}</div>
-            ${stalled}
-            ${renderLadder(m)}
-            ${renderRefusals(m)}
-        </div>`;
+        // Finished runs start collapsed: on a ladder you accumulate one card
+        // per rung, and the one you want open is the one still moving.
+        const done = m.state === 'finished';
+        return card(r.name, escapeHtml(r.name), badge, sub,
+                    stalled + renderLadder(m) + renderRefusals(m), done);
     }
 
     // Fallback reading: no manifest, so this is what is ON DISK. Say so.
@@ -124,13 +151,12 @@ function renderRung(r) {
         ? `<div class="err">A manifest is present but could not be read:
            ${escapeHtml(r.manifest_error)}. Showing what is on disk instead.</div>`
         : '';
-    return `<div class="card">
-        <h3>${escapeHtml(r.name)} <span class="badge disk">${escapeHtml(r.source)}</span></h3>
-        ${err}
-        ${bits.length
-            ? `<div class="sub">${bits.join(' · ')}</div>`
-            : `<div class="empty">Nothing built here yet.</div>`}
-    </div>`;
+    const body = err + (bits.length
+        ? `<div class="hint">${bits.join(' · ')}</div>`
+        : `<div class="empty">Nothing built here yet.</div>`);
+    return card(r.name, escapeHtml(r.name),
+                `<span class="badge disk">${escapeHtml(r.source)}</span>`,
+                '', body, false);
 }
 
 function renderStages(state) {
@@ -146,18 +172,15 @@ function renderStages(state) {
     }
     host.innerHTML = state.stages.map((s) => {
         if (!s.exists) {
-            return `<div class="card">
-                <h3>${escapeHtml(s.name)}</h3>
-                <div class="err">Directory not found:
-                <code>${escapeHtml(s.path)}</code></div>
-            </div>`;
+            return `<div class="card"><h3>${escapeHtml(s.name)}</h3>
+                <div class="card-body"><div class="err">Directory not found:
+                <code>${escapeHtml(s.path)}</code></div></div></div>`;
         }
         if (!s.rungs.length) {
-            return `<div class="card">
-                <h3>${escapeHtml(s.name)}</h3>
+            return `<div class="card"><h3>${escapeHtml(s.name)}</h3>
                 <div class="sub"><code>${escapeHtml(s.path)}</code></div>
-                <div class="empty">No runs here yet.</div>
-            </div>`;
+                <div class="card-body"><div class="empty">No runs here yet.</div>
+                </div></div>`;
         }
         return s.rungs.map(renderRung).join('');
     }).join('');
@@ -169,8 +192,7 @@ function renderLog(l) {
     const st = l.step || {};
     const pct = (st.step != null && st.total)
         ? Math.min(100, Math.round(100 * st.step / st.total)) : null;
-    const bar = pct == null ? '' :
-        `<div class="bar"><i style="width:${pct}%"></i></div>`;
+    const bar = pct == null ? '' : `<div class="bar"><i style="width:${pct}%"></i></div>`;
     const kv = [
         ['phase', l.phase],
         ['activity', l.activity],
@@ -193,24 +215,28 @@ function renderLog(l) {
         ? `<ul class="warnlist">${l.warnings.map(
             (w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul>` : '';
     const miles = (l.milestones || []).length
-        ? `<div class="mile">✓ ${l.milestones.map(escapeHtml).join(' · ')}</div>`
-        : '';
+        ? `<div class="mile">✓ ${l.milestones.map(escapeHtml).join(' · ')}</div>` : '';
 
-    return `<div class="card">
-        <h3>${escapeHtml(l.name)}</h3>
-        <div class="sub"><code>${escapeHtml(l.path)}</code></div>
-        ${stalled}${bar}
-        <dl class="kv">${kv}</dl>
-        ${miles}${warns}
-    </div>`;
+    return card('log:' + l.path, escapeHtml(l.name), '',
+                `<code>${escapeHtml(l.path)}</code>`,
+                stalled + bar + `<dl class="kv">${kv}</dl>` + miles + warns,
+                false);
 }
 
 function renderLogs(state) {
     const logs = state.stages.flatMap((s) => s.logs || []);
     const host = $('logs-body');
     if (!logs.length) {
+        // Say WHERE it looked and WHAT for. "No logs found" on its own sends
+        // you to check whether the tab is broken; naming the directory and the
+        // pattern sends you to check the thing that is actually wrong.
+        const where = state.stages.map(
+            (s) => `<li><code>${escapeHtml(s.path)}</code></li>`).join('');
         host.innerHTML = `<div class="empty">
             <b>No logs found.</b><br>
+            Looked in:<ul style="list-style:none;padding:0">${where || '<li>(no stages)</li>'}</ul>
+            for the <code>logs:</code> globs in your config (default
+            <code>*.log</code>).<br>
             Redirect a run into a watched directory and it appears here —
             nothing needs instrumenting.
         </div>`;
@@ -230,17 +256,28 @@ async function load() {
         $('rehearsal-banner').style.display = demo ? 'block' : 'none';
         $('rehearsal-pill').style.display = demo ? '' : 'none';
 
-        $('stage-pill').textContent =
-            `${state.stages.length} stage${state.stages.length === 1 ? '' : 's'}`;
+        const rungs = state.stages.flatMap((s) => s.rungs || []);
+        const logs = state.stages.flatMap((s) => s.logs || []);
+        const running = rungs.filter(
+            (r) => r.manifest && r.manifest.state === 'running').length;
+
+        // The pill answers a question you actually have: how many runs are
+        // here, and is anything moving?
+        $('runs-pill').textContent = running
+            ? `${rungs.length} runs · ${running} live`
+            : `${rungs.length} run${rungs.length === 1 ? '' : 's'}`;
         $('age-pill').textContent = `${state.took_ms} ms`;
-        $('age-pill').title = `read in ${state.took_ms} ms`;
+        $('age-pill').title = `server read the disk in ${state.took_ms} ms`;
+
+        // Counts on the tabs, so an empty tab is distinguishable from a broken
+        // one WITHOUT clicking it.
+        $('count-stages').textContent = rungs.length ? `(${rungs.length})` : '';
+        $('count-logs').textContent = logs.length ? `(${logs.length})` : '(0)';
 
         renderStages(state);
         renderLogs(state);
 
-        if (state.refresh_seconds) {
-            REFRESH_MS = state.refresh_seconds * 1000;
-        }
+        if (state.refresh_seconds) REFRESH_MS = state.refresh_seconds * 1000;
     } catch (e) {
         showError(`⚠ Could not read <code>/api/state</code>: ${escapeHtml(
             (e && e.message) || String(e))}`);
@@ -255,13 +292,9 @@ function schedule() {
     // monitor overnight should not be re-reading log tails every five seconds
     // on the box that is training - the room must never be the reason the
     // machine is busy.
-    TIMER = setInterval(() => {
-        if (!document.hidden) load();
-    }, REFRESH_MS);
+    TIMER = setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
 }
 
-document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) load();
-});
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 
 load().then(schedule);

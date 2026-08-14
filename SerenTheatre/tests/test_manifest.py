@@ -159,3 +159,62 @@ def test_as_dict_carries_the_derived_fields_the_viewer_paints(tmp_path):
     for key in ("state", "stale", "done_count", "stage_count"):
         assert key in d
     assert all("known_status" in s for s in d["stages"])
+
+
+# -- what counts as a rung ---------------------------------------------------
+
+def test_a_corpus_root_is_not_a_rung(tmp_path):
+    """`dryrun_*` matches `dryrun_data` - the shared corpus root - so Theatre
+    rendered it as an empty rung reading "Nothing built here yet", a true
+    sentence about a directory that will never have anything built in it.
+
+    Note the asymmetry that hid it: the non-dryrun glob is `*_agent_*`, which
+    `fraunkenstein_data` escapes. It only ever appeared in DRYRUN mode - the
+    mode used for every shakedown and never for a real rung.
+    """
+    from seren_theatre.sources import looks_like_rung
+
+    data = tmp_path / "dryrun_data"
+    (data).mkdir()
+    (data / "powershell_code.jsonl").write_text("{}", encoding="utf-8")
+    assert looks_like_rung(data) is False
+
+
+def test_a_run_with_only_a_manifest_IS_a_rung(tmp_path):
+    """An instrumented run that has produced nothing yet is still a run - the
+    runner writes the manifest at preflight, before any artifact exists."""
+    from seren_theatre.sources import looks_like_rung
+
+    run = tmp_path / "dryrun_0.5B"
+    run.mkdir()
+    (run / mf.MANIFEST_NAME).write_text('{"schema_version":1,"stages":[]}',
+                                        encoding="utf-8")
+    assert looks_like_rung(run) is True
+
+
+def test_an_uninstrumented_run_with_artifacts_IS_a_rung(tmp_path):
+    """No manifest, but rung-shaped contents. Scraping still has to work -
+    "a stage is a directory" is why Theatre requires nothing."""
+    from seren_theatre.sources import looks_like_rung
+
+    run = tmp_path / "dryrun_0.5B"
+    (run / "qwen_coder_python").mkdir(parents=True)
+    (run / "qwen_coder_python" / "config.json").write_text("{}", encoding="utf-8")
+    assert looks_like_rung(run) is True
+
+
+def test_a_lone_gguf_is_enough(tmp_path):
+    from seren_theatre.sources import looks_like_rung
+
+    run = tmp_path / "dryrun_0.5B"
+    run.mkdir()
+    (run / "model.gguf").write_text("x", encoding="utf-8")
+    assert looks_like_rung(run) is True
+
+
+def test_an_empty_directory_that_merely_matches_is_not_a_rung(tmp_path):
+    from seren_theatre.sources import looks_like_rung
+
+    d = tmp_path / "dryrun_junk"
+    d.mkdir()
+    assert looks_like_rung(d) is False
