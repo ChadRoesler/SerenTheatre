@@ -14,18 +14,34 @@ keywords = ["seren", "dashboard", "training", "moe", "fastapi", "viewer"]
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
-    "pydantic>=2.5",
+    # NO explicit pydantic. Config moved to dataclasses + the shared Meninges
+    # blocks, matching Probe, so nothing in this package imports it. FastAPI
+    # still pulls it transitively; declaring it here would claim a direct
+    # dependency that no longer exists.
     "pyyaml>=6.0",
     # The shared Seren core - UI shell, auth, config, update checking. Taken as
     # a CORE dep for the same reason Margin took it: a stale viewer that reports
     # confidently on a run is exactly the bad time update checking prevents.
     "seren-meninges>=2.2.0,<3",
+    # The tendon - request-logging middleware, one copy for the family so a fix
+    # lands everywhere. Core rather than an extra because Theatre is a TOOL
+    # strangers install: when someone else's viewer shows them the wrong thing,
+    # the request log is how they find out why, and an optional diagnostic is
+    # missing precisely on the box that needed it.
+    "seren-sinew>=1.0.0,<2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "httpx>=0.26",   # for fastapi TestClient
+]
+# Corporate / intercepting-proxy support, same as Probe and Loci. Routes
+# outbound verification (the update check, and nothing else here) through the
+# OS trust store, which is what makes the check work rather than hang on a box
+# behind a corporate MITM proxy.
+corp = [
+    "truststore>=0.9",
 ]
 # Kept as an EMPTY alias, matching Margin. Update checking is CORE in
 # seren-meninges and meninges is a core dep here, so there is nothing left to

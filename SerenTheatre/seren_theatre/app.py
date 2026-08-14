@@ -21,8 +21,14 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
+# Hard imports, not guarded ones. Both are core dependencies and config.py
+# already imports Meninges at module scope for ServerConfig, so a guard here
+# would only ever hide the second symptom of a failure that already happened.
+from seren_meninges.auth import bearer_auth_middleware
+from seren_sinew.request_log import RequestLoggingMiddleware
+
 from ._diag import diag
-from .config import TheatreConfig, load_config
+from .config import DEFAULT_PORT, TheatreConfig, load_config
 from .sources import scan_stage
 from . import __version__ as _fallback_version
 
@@ -30,11 +36,27 @@ from . import __version__ as _fallback_version
 # import so a missing pack is a startup-time discovery, not a 500 the first
 # time somebody opens the page.
 _VIEWER_DIR = Path(__file__).resolve().parent / "viewer" / "ui"
-DEFAULT_PORT = 7427
+
+# Re-exported from config, NOT redeclared. It was written out twice - once
+# here, once there - which is two places to edit and one place to forget. The
+# port is a config fact; this module just passes it along for anything
+# importing it from here.
+__all__ = ["ACCENT", "DEFAULT_PORT", "SERVICE", "create_app"]
 
 # Every other service in the constellation gets a colour. The theatre gets the
 # house lights down.
-
+#
+# ONE CONSTANT, TWO CONSUMERS, ON PURPOSE. This value is the service's identity
+# in GET / (which Lodestar and Symposium read) AND the accent handed to the
+# viewer shell. They were previously two different literals - #000000 in the
+# installer's --describe, #171717 hardcoded at the render_from_dir call - so
+# the colour on a service card and the colour on its own page disagreed, and
+# nothing anywhere compared them. Naming it once removes the possibility.
+#
+# It also stops being a NameError. Removing _describe.py took the definition
+# with it and left the reference on the SERVICE line below, so `import
+# seren_theatre.app` raised and every entry point into this package was dead.
+ACCENT = "#000000"
 
 try:                                    # meninges is the family's shell
     from seren_meninges.viewer import render_from_dir
@@ -96,6 +118,28 @@ def create_app(config: Optional[TheatreConfig] = None,
     app = FastAPI(title="SerenTheatre", version=APP_VERSION)
     app.state.cfg = cfg
     app.state.demo = demo
+
+    # -- Bearer auth --
+    # Empty token = open, which is the default and the right default: on
+    # loopback, in front of a read-only viewer, a mandatory secret would be
+    # ceremony. It exists because the moment somebody widens the bind - and
+    # they will, that is how you reach it from your desk - the alternative to
+    # a token is publishing training logs to the LAN with nothing in front of
+    # them. The knob has to already be there when that day comes.
+    app.add_middleware(bearer_auth_middleware(cfg.server.resolve_bearer()))
+
+    # -- Request logging --
+    # Theatre is a TOOL other people install, not a private notebook, and this
+    # is where those two shapes visibly part company. Margin has no request log
+    # on purpose: it is the one surface whose design rests on nobody reading
+    # it, so a log of every read would be footprints across exactly the thing
+    # being promised. Theatre has the opposite job - when a stranger's viewer
+    # is showing them the wrong thing, the log is how they find out why.
+    app.add_middleware(
+        RequestLoggingMiddleware,
+        service_name="seren-theatre",
+        env_prefix="SEREN_THEATRE",
+    )
 
     # Catch EVERYTHING, not just ImportError. This feature only draws a badge,
     # and seren_meninges states the contract outright: a version read must
@@ -193,7 +237,7 @@ def create_app(config: Optional[TheatreConfig] = None,
             title="seren-theatre",
             brand="Seren<b>Theatre</b>",
             subtitle=f"v{APP_VERSION} · watch a model being made",
-            accent="#171717",
+            accent=ACCENT,
         ))
 
     diag(f"[seren-theatre] {len(cfg.stages)} stage(s): "
