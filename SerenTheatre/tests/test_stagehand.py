@@ -72,7 +72,7 @@ def test_the_service_can_say_stagehand_exists_but_not_use_it():
 # -- the literal command -----------------------------------------------------
 
 def test_argv_is_the_documented_command(tmp_path, monkeypatch):
-    """`ms-moe build <recipe> --json`, exactly.
+    """`ms-moe-maker build <recipe> --json`, exactly.
 
     This string is the guarantee. The moment stagehand runs something else, an
     automated build stops exercising the path the README documents, and the
@@ -82,28 +82,28 @@ def test_argv_is_the_documented_command(tmp_path, monkeypatch):
                         lambda name: f"/usr/local/bin/{name}")
     recipe = tmp_path / "recipe.yaml"
     argv = stagehand.build_argv(recipe)
-    assert argv[0].endswith("ms-moe")
+    assert argv[0].endswith("ms-moe-maker")
     assert argv[1] == "build"
     assert argv[2] == str(recipe)
     assert argv[-1] == "--json"
 
 
 def test_extra_flags_pass_through_after_the_recipe(tmp_path, monkeypatch):
-    monkeypatch.setattr(stagehand.shutil, "which", lambda name: "/bin/ms-moe")
+    monkeypatch.setattr(stagehand.shutil, "which", lambda name: "/bin/ms-moe-maker")
     argv = stagehand.build_argv(tmp_path / "r.yaml",
                                 extra=["--dryrun", "--allow-refusals"])
     assert argv[-2:] == ["--dryrun", "--allow-refusals"]
 
 
 def test_the_console_script_is_preferred_over_the_module(monkeypatch):
-    monkeypatch.setattr(stagehand.shutil, "which", lambda name: "/bin/ms-moe")
-    assert stagehand.resolve_command() == ["/bin/ms-moe"]
+    monkeypatch.setattr(stagehand.shutil, "which", lambda name: "/bin/ms-moe-maker")
+    assert stagehand.resolve_command() == ["/bin/ms-moe-maker"]
 
 
 def test_the_module_fallback_is_used_only_when_the_script_is_missing(monkeypatch):
     monkeypatch.setattr(stagehand.shutil, "which", lambda name: None)
-    monkeypatch.setitem(sys.modules, "ms_moe", type(sys)("ms_moe"))
-    assert stagehand.resolve_command() == [sys.executable, "-m", "ms_moe"]
+    monkeypatch.setitem(sys.modules, "ms_moe_maker", type(sys)("ms_moe_maker"))
+    assert stagehand.resolve_command() == [sys.executable, "-m", "ms_moe_maker"]
 
 
 # -- honest failure ----------------------------------------------------------
@@ -112,14 +112,14 @@ def test_a_missing_ms_moe_names_the_extra_rather_than_exploding(monkeypatch):
     """A missing optional dependency should be one sentence naming the extra,
     not a FileNotFoundError from subprocess three frames down."""
     monkeypatch.setattr(stagehand.shutil, "which", lambda name: None)
-    monkeypatch.delitem(sys.modules, "ms_moe", raising=False)
+    monkeypatch.delitem(sys.modules, "ms_moe_maker", raising=False)
 
     import builtins
     real_import = builtins.__import__
 
     def blocked(name, *args, **kw):
-        if name == "ms_moe":
-            raise ImportError("no ms_moe")
+        if name == "ms_moe_maker":
+            raise ImportError("no ms_moe_maker")
         return real_import(name, *args, **kw)
 
     monkeypatch.setattr(builtins, "__import__", blocked)
@@ -136,8 +136,8 @@ def test_available_is_a_safe_question_that_never_raises(monkeypatch):
     real_import = builtins.__import__
 
     def blocked(name, *args, **kw):
-        if name == "ms_moe":
-            raise ImportError("no ms_moe")
+        if name == "ms_moe_maker":
+            raise ImportError("no ms_moe_maker")
         return real_import(name, *args, **kw)
 
     monkeypatch.setattr(builtins, "__import__", blocked)
@@ -148,7 +148,7 @@ def test_available_is_a_safe_question_that_never_raises(monkeypatch):
 
 def test_check_reports_whether_the_documented_command_is_what_will_run(
         monkeypatch, capsys):
-    monkeypatch.setattr(stagehand.shutil, "which", lambda name: "/bin/ms-moe")
+    monkeypatch.setattr(stagehand.shutil, "which", lambda name: "/bin/ms-moe-maker")
     assert stagehand.main(["--check"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["available"] is True
@@ -160,7 +160,7 @@ def test_check_flags_the_module_fallback_as_not_the_documented_path(
     """The fallback works, and it silently voids the 'every run tests the
     hand-run path' guarantee. So it is reported, not hidden."""
     monkeypatch.setattr(stagehand.shutil, "which", lambda name: None)
-    monkeypatch.setitem(sys.modules, "ms_moe", type(sys)("ms_moe"))
+    monkeypatch.setitem(sys.modules, "ms_moe_maker", type(sys)("ms_moe_maker"))
     assert stagehand.main(["--check"]) == 0
     assert json.loads(capsys.readouterr().out)["is_documented_command"] is False
 
@@ -173,8 +173,8 @@ def test_a_missing_recipe_is_a_clean_exit_not_a_traceback(tmp_path, capsys):
 # -- it actually forks -------------------------------------------------------
 
 def test_run_forks_and_relays_the_exit_code(tmp_path, monkeypatch):
-    """End to end against a stand-in for the ms-moe CLI."""
-    fake = tmp_path / "fake-ms-moe"
+    """End to end against a stand-in for the ms-moe-maker CLI."""
+    fake = tmp_path / "fake-ms-moe-maker"
     fake.write_text(
         "#!/usr/bin/env python3\n"
         "import sys, json\n"

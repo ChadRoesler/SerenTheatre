@@ -99,7 +99,7 @@ def test_one_malformed_stage_does_not_sink_the_run(tmp_path):
 
 def test_unknown_keys_are_ignored_not_fatal(tmp_path):
     """Additive fields from a newer writer must not break an older reader -
-    that is what lets ms-moe add a field without a lockstep upgrade."""
+    that is what lets ms-moe-maker add a field without a lockstep upgrade."""
     write(tmp_path, minimal(gpu_hours=12.5, cluster="nano8gb"))
     assert mf.read(tmp_path) is not None
 

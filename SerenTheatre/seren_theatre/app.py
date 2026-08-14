@@ -30,6 +30,11 @@ from . import __version__ as _fallback_version
 # import so a missing pack is a startup-time discovery, not a 500 the first
 # time somebody opens the page.
 _VIEWER_DIR = Path(__file__).resolve().parent / "viewer" / "ui"
+DEFAULT_PORT = 7427
+
+# Every other service in the constellation gets a colour. The theatre gets the
+# house lights down.
+ACCENT = "#171717"
 
 try:                                    # meninges is the family's shell
     from seren_meninges.viewer import render_from_dir

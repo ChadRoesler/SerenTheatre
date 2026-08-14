@@ -26,11 +26,11 @@ the entire point of the name.
 
 FORK, NEVER IMPORT - twice over.
 
-Stagehand runs the literal string from ms-moe's README:
+Stagehand runs the literal string from ms-moe-maker's README:
 
-    ms-moe build recipe.yaml
+    ms-moe-maker build recipe.yaml
 
-Not an import of ms_moe.runner, not a Python API with its own defaults. The
+Not an import of ms_moe_maker.runner, not a Python API with its own defaults. The
 same command a person types. If the automated path and the hand-run path ever
 diverged, the hand-run path is the one that rots, because it is the one with no
 users - so they are made identical and the possibility is removed. Every
@@ -51,25 +51,25 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-# The literal command from ms-moe's README. Quoted as data so the test that
+# The literal command from ms-moe-maker's README. Quoted as data so the test that
 # asserts we run exactly this has something to compare against.
-MS_MOE_COMMAND = "ms-moe"
+MS_MOE_COMMAND = "ms-moe-maker"
 BUILD_VERB = "build"
 
 
 class StagehandUnavailable(RuntimeError):
-    """ms-moe is not installed, so there is nothing to fork."""
+    """ms-moe-maker is not installed, so there is nothing to fork."""
 
 
 def resolve_command() -> List[str]:
-    """Find `ms-moe`, preferring the literal console script.
+    """Find `ms-moe-maker`, preferring the literal console script.
 
     Order matters and the fallback is deliberately second-class:
 
-      1. `ms-moe` on PATH - the documented command, the one in the README, the
+      1. `ms-moe-maker` on PATH - the documented command, the one in the README, the
          one a person types. This is the path we want every automated run to
          exercise.
-      2. `python -m ms_moe` - works, but it is NOT the documented command, so
+      2. `python -m ms_moe_maker` - works, but it is NOT the documented command, so
          using it means the automated run is no longer testing the hand-run
          path. The caller is told when this happens rather than left to assume
          the guarantee still holds.
@@ -83,16 +83,16 @@ def resolve_command() -> List[str]:
         return [found]
 
     try:
-        import ms_moe  # noqa: F401
+        import ms_moe_maker  # noqa: F401
     except ImportError:
         raise StagehandUnavailable(
-            "ms-moe is not installed. Stagehand is the half of SerenTheatre "
+            "ms-moe-maker is not installed. Stagehand is the half of SerenTheatre "
             "that does the work, and it is an opt-in extra:\n"
             "    pip install 'seren-theatre[stagehand]'\n"
             "The viewer works perfectly without it - watching a run has never "
             "required being able to start one."
         ) from None
-    return [sys.executable, "-m", "ms_moe"]
+    return [sys.executable, "-m", "ms_moe_maker"]
 
 
 def build_argv(recipe: Path, *, json_events: bool = True,
@@ -108,9 +108,9 @@ def build_argv(recipe: Path, *, json_events: bool = True,
 def run(recipe: Path, *, json_events: bool = True,
         extra: Sequence[str] = (), cwd: Optional[Path] = None,
         echo: bool = True) -> int:
-    """Fork ms-moe and relay it. Returns the child's exit code.
+    """Fork ms-moe-maker and relay it. Returns the child's exit code.
 
-    Relay, not summarise. Stagehand adds NOTHING to the stream - ms-moe already
+    Relay, not summarise. Stagehand adds NOTHING to the stream - ms-moe-maker already
     speaks a documented event vocabulary and writes the run manifest that
     Theatre reads. A wrapper that re-interpreted either would become a third
     opinion about what a build is doing, and three opinions is how a dashboard
@@ -153,20 +153,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         prog="seren-theatre-stagehand",
         description="Start a Ms.MoE build. The theatre shows the data; the "
                     "stagehand does the work.",
-        epilog="Runs `ms-moe build <recipe> --json` - the literal command from "
-               "the ms-moe README, so every automated run also tests the "
+        epilog="Runs `ms-moe-maker build <recipe> --json` - the literal command from "
+               "the ms-moe-maker README, so every automated run also tests the "
                "hand-run path.")
     ap.add_argument("recipe", nargs="?", help="path to the recipe .yaml")
     ap.add_argument("--check", action="store_true",
                     help="report whether stagehand is usable, and exit")
     ap.add_argument("--prose", action="store_true",
-                    help="let ms-moe print prose instead of JSON events")
+                    help="let ms-moe-maker print prose instead of JSON events")
     ap.add_argument("--cwd", default=None,
                     help="directory to run the build in (default: the "
                          "recipe's own directory, which is where the pipeline "
                          "and its run roots normally live)")
     ap.add_argument("rest", nargs=argparse.REMAINDER,
-                    help="anything after -- is passed straight to ms-moe "
+                    help="anything after -- is passed straight to ms-moe-maker "
                          "(e.g. -- --dryrun --allow-refusals)")
     a = ap.parse_args(argv)
 

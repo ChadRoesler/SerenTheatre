@@ -29,7 +29,7 @@ that folder is on stage. This is why Theatre `requires` nothing and can be the
 first thing installed on a box.
 
 The run directory is also the *only* interface between the pipeline and the
-viewer, which is what lets `ms-moe` and `seren-theatre` be separate packages
+viewer, which is what lets `ms-moe-maker` and `seren-theatre` be separate packages
 that don't know the other exists. Install either one alone; both work.
 
 ---
@@ -164,13 +164,13 @@ and that's exactly what makes it safe to point this at a live 14B run that's
 been going nine hours. So `POST /build` is out. If the theatre could start the
 build, the theatre would be doing the work. **A stagehand is not on stage.**
 
-What stagehand runs is the literal command from ms-moe's README:
+What stagehand runs is the literal command from ms-moe-maker's README:
 
 ```
-stagehand → /usr/local/bin/ms-moe build /path/recipe.yaml --json
+stagehand → /usr/local/bin/ms-moe-maker build /path/recipe.yaml --json
 ```
 
-Not an import of `ms_moe.runner`, not a Python API with its own defaults. The
+Not an import of `ms_moe_maker.runner`, not a Python API with its own defaults. The
 same string a person types — so every automated run is also a test of the
 documented one. If those ever diverged, the hand-run path is the one that would
 rot, because it's the one with no users.
@@ -184,8 +184,8 @@ seren-theatre-stagehand --check          # is it usable? which command will run?
 seren-theatre-stagehand r.yaml -- --dryrun --allow-refusals
 ```
 
-`--check` reports `is_documented_command`. If `ms-moe` isn't on PATH, stagehand
-falls back to `python -m ms_moe` — that works, but it quietly voids the
+`--check` reports `is_documented_command`. If `ms-moe-maker` isn't on PATH, stagehand
+falls back to `python -m ms_moe_maker` — that works, but it quietly voids the
 "every run tests the hand-run path" guarantee, so it's reported rather than
 hidden.
 

@@ -253,7 +253,7 @@ def parse_run_log(path: Path, limit: int) -> RunLog:
 #
 # Scraping is the FALLBACK. The globs below hardcode the pipeline's internal
 # artifact names, which is a real coupling: rename `qwen_coder_*` during the
-# ms-moe decomposition and this reports "no specialists" for a perfectly
+# ms-moe-maker decomposition and this reports "no specialists" for a perfectly
 # healthy run, confidently. That is the worst way for a dashboard to be wrong,
 # and it is exactly why the manifest exists.
 #
