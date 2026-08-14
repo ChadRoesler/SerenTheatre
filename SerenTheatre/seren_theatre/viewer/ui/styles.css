@@ -4,67 +4,101 @@
  * tokens (--text, --font, and --accent from render_from_dir). Everything here
  * is the room itself.
  *
- * ON THE ACCENT. Theatre's accent is #000000 - the house lights down, the one
- * service in the constellation that doesn't get a colour. That is a lovely
- * idea and a terrible border colour on a dark panel, so it is used where black
- * READS as deliberate rather than invisible: the well behind the stage rows is
- * pure accent, and the room sits ON it. The joke stays intact and you can
- * still see the furniture.
+ * ON THE PALETTE. These are the FAMILY tokens - the same --bg/--panel/--line
+ * values Observatory, Memory, Loci and Workbench use. The first pass invented
+ * its own near-black set (#101014/#17171d) on the theory that "the theatre gets
+ * the house lights down" should darken the whole page. That was overreach: it
+ * made Theatre read as a different application rather than as one more room in
+ * the same building, which is the opposite of what a constellation wants.
+ *
+ * The house-lights-down idea survives where it belongs - the accent is
+ * #000000, and the ladder well behind the stage rows is pure accent. The joke
+ * is in the furniture, not in the walls.
  */
 
 :root {
-    --bg: #101014;
-    --panel: #17171d;
-    --panel-2: #1d1d25;
-    --line: #2b2b36;
-    --muted: #8b8b99;
-    --faint: #63636f;
-    --ok: #7fd88f;
-    --warn: #f5d76e;
-    --bad: #ff6e8a;
-    --run: #5bc8e8;
-    --idle: #5a5a66;
+    --bg: #14141f;
+    --bg-2: #1a1a2e;
+    --panel: #1f2036;
+    --panel-2: #262844;
+    --line: #33365a;
+    --muted: #9aa0c8;
+    --faint: #6c7199;
+    --ok: #3fb950;      /* done / healthy */
+    --warn: #d2a93f;    /* skipped-with-a-note / stalled */
+    --danger: #f0796a;  /* failed */
+    --idle: #6c8174;    /* pending */
+    --run: #58a6ff;     /* running - the one thing that should pull the eye */
 }
 
 html {
-    background: radial-gradient(1100px 560px at 70% -14%, #1b1b24 0%, var(--bg) 58%) no-repeat fixed;
+    background: radial-gradient(1100px 560px at 72% -12%, #191a2b 0%, var(--bg) 55%) no-repeat fixed;
     background-color: var(--bg);
 }
 
 body { font-size: 14px; }
 
-/* -- rehearsal marking --------------------------------------------------- */
-.rehearsal {
-    background: #3a2a00;
-    color: var(--warn);
-    border-bottom: 1px solid #6a4d00;
-    padding: 8px 18px;
-    letter-spacing: .06em;
+/* -- CENTRED COLUMN ------------------------------------------------------
+ * Full-bleed cards on a 2560px monitor put the stage name a foot away from
+ * its own timings, so the eye has to travel the whole desk to read one row.
+ * A run is a LIST, and lists want a column. 1100px keeps the longest real
+ * line - a stage label plus its artifact name - comfortably on one row.        */
+.view {
+    max-width: 1100px;
+    margin: 0 auto;
+    width: 100%;
 }
-#rehearsal-pill { background: #3a2a00; color: var(--warn); }
 
 /* -- cards --------------------------------------------------------------- */
 .card {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 8px;
-    padding: 14px 16px;
     margin-bottom: 16px;
+    overflow: hidden;
 }
+.card > .card-body { padding: 0 16px 14px; }
+
+/* The header is the click target when the card is collapsible. */
 .card > h3 {
     font-size: 12px;
-    margin: 0 0 4px;
+    margin: 0;
+    padding: 13px 16px 4px;
     letter-spacing: .1em;
     text-transform: uppercase;
     color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 10px;
 }
-.card .sub { color: var(--faint); font-size: 12px; margin-bottom: 12px; }
+.card.collapsible > h3 { cursor: pointer; user-select: none; }
+.card.collapsible > h3:hover { background: var(--panel-2); }
+.card .sub {
+    color: var(--faint);
+    font-size: 12px;
+    padding: 0 16px 12px;
+}
 
+/* The twisty. Rotates rather than swapping glyphs, so it animates and so the
+   collapsed state is legible at a glance across a stack of ten runs. */
+.twisty {
+    display: inline-block;
+    transition: transform .12s ease;
+    color: var(--faint);
+    font-size: 10px;
+}
+.card.collapsed .twisty { transform: rotate(-90deg); }
+.card.collapsed > .sub,
+.card.collapsed > .card-body { display: none; }
+@media (prefers-reduced-motion: reduce) {
+    .twisty { transition: none; }
+}
+
+.spacer { flex: 1; }
 .hint { color: var(--faint); font-size: 12px; }
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.spacer { flex: 1; }
 .err {
-    background: #2a1116; border: 1px solid #5c2230; color: var(--bad);
+    background: #3a1a20; border: 1px solid #6d2b38; color: var(--danger);
     border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;
 }
 
@@ -78,8 +112,19 @@ body { font-size: 14px; }
 }
 .empty b { color: var(--muted); }
 
+/* -- rehearsal marking --------------------------------------------------- */
+.rehearsal {
+    background: #3a2a00;
+    color: var(--warn);
+    border-bottom: 1px solid #6a4d00;
+    padding: 8px 18px;
+    letter-spacing: .06em;
+}
+#rehearsal-pill { background: #3a2a00; color: var(--warn); }
+
 /* -- the stage ladder ---------------------------------------------------- */
-/* The accent well. On Theatre this is pure black, which is the point. */
+/* The accent well. On Theatre the accent is pure black, and this is the one
+   place that reads as deliberate rather than invisible: the room sits ON it. */
 .ladder {
     background: var(--accent, #000);
     border: 1px solid var(--line);
@@ -95,7 +140,7 @@ body { font-size: 14px; }
     border-radius: 6px;
 }
 .step + .step { margin-top: 2px; }
-.step:nth-child(odd) { background: rgba(255, 255, 255, .022); }
+.step:nth-child(odd) { background: rgba(255, 255, 255, .028); }
 .step .dot {
     width: 9px; height: 9px; border-radius: 50%;
     background: var(--idle); justify-self: center;
@@ -104,22 +149,19 @@ body { font-size: 14px; }
 .step .meta { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .step .note { grid-column: 2 / -1; color: var(--warn); font-size: 12px; }
 
-.step.done  .dot { background: var(--ok); }
-.step.skipped .dot { background: var(--idle); box-shadow: inset 0 0 0 2px var(--ok); }
+.step.done    .dot { background: var(--ok); }
+.step.skipped .dot { background: transparent; box-shadow: inset 0 0 0 2px var(--ok); }
 .step.skipped .label { color: var(--muted); }
-.step.failed .dot { background: var(--bad); }
+.step.failed  .dot { background: var(--danger); }
 .step.refused .dot { background: var(--warn); }
 .step.pending .label { color: var(--faint); }
-.step.running .dot {
-    background: var(--run);
-    animation: pulse 1.6s ease-in-out infinite;
-}
-.step.running .label { color: #fff; }
+.step.running .dot { background: var(--run); animation: pulse 1.6s ease-in-out infinite; }
+.step.running .label { color: #fff; font-weight: 600; }
 /* An unrecognised status from a newer writer. Never painted as "pending" -
    that would be inventing a reading. */
 .step.unknown .dot { background: transparent; box-shadow: inset 0 0 0 2px var(--warn); }
 
-@keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+@keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
 @media (prefers-reduced-motion: reduce) {
     .step.running .dot { animation: none; }
 }
@@ -128,11 +170,13 @@ body { font-size: 14px; }
 .badge {
     border: 1px solid var(--line); border-radius: 99px;
     padding: 1px 9px; font-size: 11px; color: var(--muted);
+    white-space: nowrap;
 }
-.badge.running  { color: var(--run); border-color: #2b5566; }
+.badge.running  { color: var(--run); border-color: #2b4a72; }
 .badge.finished { color: var(--ok); border-color: #2c5537; }
-.badge.failed   { color: var(--bad); border-color: #5c2230; }
+.badge.failed   { color: var(--danger); border-color: #6d2b38; }
 .badge.stalled  { color: var(--warn); border-color: #5c4a1e; }
+.badge.idle,
 .badge.disk     { color: var(--faint); }
 
 /* Refusals. Deliberately prominent - a recipe field that was ignored is
@@ -150,11 +194,12 @@ body { font-size: 14px; }
 .kv dt { color: var(--faint); font-size: 12px; }
 .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
 
-.bar { height: 6px; background: #23232c; border-radius: 3px; overflow: hidden; }
+.bar { height: 6px; background: var(--bg-2); border-radius: 3px; overflow: hidden;
+       margin-bottom: 10px; }
 .bar > i { display: block; height: 100%; background: var(--run); }
 
 .warnlist { margin: 10px 0 0; padding-left: 18px; }
 .warnlist li { color: var(--warn); font-size: 12px; }
-.mile { color: var(--ok); font-size: 12px; }
+.mile { color: var(--ok); font-size: 12px; margin-top: 8px; }
 
 code { color: var(--muted); font-size: 12px; }

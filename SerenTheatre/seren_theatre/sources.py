@@ -21,6 +21,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field, asdict
+from fnmatch import fnmatch
 
 from . import manifest as _manifest
 from pathlib import Path
@@ -269,6 +270,44 @@ _STAGES = (
 )
 
 
+def looks_like_rung(root: Path) -> bool:
+    """Is this directory a RUN, or just something the glob happened to catch?
+
+    The globs are patterns, and a pattern cannot tell a rung from its
+    neighbours: `dryrun_*` matches `dryrun_0.5B` (a run) AND `dryrun_data`
+    (the shared corpus root, which is not a run and never will be). Theatre
+    rendered the corpus as an empty rung card reading "Nothing built here yet",
+    which is a true sentence about a directory that was never going to have
+    anything built in it - so it reads as a failure and is only clutter.
+
+    Note the asymmetry that hid it: the non-dryrun globs are `*_agent_*`, which
+    `fraunkenstein_data` escapes. So this only ever appeared in DRYRUN mode -
+    the mode you use for every shakedown and never for a real rung. The worst
+    possible distribution for noticing.
+
+    So: ask what the directory IS, not what its name looks like. A rung has a
+    manifest (an instrumented run, even one that has produced nothing yet), or
+    it has rung-shaped artifacts (an uninstrumented one). Anything else is a
+    directory that shares a prefix.
+    """
+    try:
+        if (root / _manifest.MANIFEST_NAME).is_file():
+            return True
+    except OSError:
+        return False
+    try:
+        for entry in root.iterdir():
+            n = entry.name
+            if n.endswith(".gguf"):
+                return True
+            for _, pattern, marker in _STAGES:
+                if fnmatch(n, pattern) and (entry / marker).is_file():
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def scan_rung(root: Path) -> Dict[str, Any]:
     """What EXISTS for one rung. Presence, not promises.
 
@@ -342,7 +381,9 @@ def scan_stage(name: str, root: Path, log_globs: List[str],
                     logs.append(parse_run_log(p, limit))
         for pattern in rung_globs:
             for p in sorted(root.glob(pattern)):
-                if p.is_dir():
+                # is_dir AND looks_like_rung. The glob proposes; the directory
+                # decides. See looks_like_rung.
+                if p.is_dir() and looks_like_rung(p):
                     rungs.append(scan_rung(p))
     logs.sort(key=lambda r: r.mtime, reverse=True)
     return {"name": name, "path": str(root), "exists": root.is_dir(),
