@@ -34,7 +34,7 @@ DEFAULT_PORT = 7427
 
 # Every other service in the constellation gets a colour. The theatre gets the
 # house lights down.
-ACCENT = "#171717"
+
 
 try:                                    # meninges is the family's shell
     from seren_meninges.viewer import render_from_dir
@@ -193,7 +193,7 @@ def create_app(config: Optional[TheatreConfig] = None,
             title="seren-theatre",
             brand="Seren<b>Theatre</b>",
             subtitle=f"v{APP_VERSION} · watch a model being made",
-            accent=ACCENT,
+            accent="#171717",
         ))
 
     diag(f"[seren-theatre] {len(cfg.stages)} stage(s): "
