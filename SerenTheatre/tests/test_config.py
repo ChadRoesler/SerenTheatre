@@ -27,6 +27,7 @@ def isolated_home(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     return home
 
+DEFAULT_PORT=7427
 
 def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)

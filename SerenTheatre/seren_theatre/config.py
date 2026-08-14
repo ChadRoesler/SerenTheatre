@@ -83,7 +83,7 @@ class UpdatesConfig(BaseModel):
 
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
-    port: int = DEFAULT_PORT
+    port: int = 7427
 
 
 class TheatreConfig(BaseModel):
