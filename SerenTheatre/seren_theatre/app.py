@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
 from ._diag import diag
-from .config import ACCENT, TheatreConfig, load_config
+from .config import TheatreConfig, load_config
 from .sources import scan_stage
 from . import __version__ as _fallback_version
 
