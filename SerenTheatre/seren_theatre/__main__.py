@@ -43,11 +43,6 @@ def main() -> None:
         help="Path to seren-theatre.yaml (default: $SEREN_THEATRE_CONFIG, then "
              "~/seren-theatre/seren-theatre.yaml, falling back to built-in "
              "defaults).")
-    parser.add_argument(
-        "--demo", action="store_true",
-        help="Serve FABRICATED state so the layout can be judged with no run "
-             "in flight. Loudly marked in the UI and in the payload. Never a "
-             "fallback for an empty stage - an empty room is a true reading.")
     args = parser.parse_args()
 
     # Everything heavy is imported LATE, below the --describe return above.
@@ -58,14 +53,11 @@ def main() -> None:
     from .config import load_config
 
     cfg = load_config(args.config)
-    app = create_app(cfg, demo=args.demo)
+    app = create_app(cfg)
 
     diag(f"[seren-theatre] listening on {cfg.host}:{cfg.port}  -> "
          f"http://{cfg.host}:{cfg.port}/viewer")
-    if args.demo:
-        diag("[seren-theatre] *** REHEARSAL MODE - every number served is "
-             "fabricated. Nothing on the page is a reading. ***")
-    elif not cfg.stages:
+    if not cfg.stages:
         diag("[seren-theatre] no stages configured - the room is empty. Set "
              "SEREN_THEATRE_STAGE=/path/to/lab or add a stages: block.")
     uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info")

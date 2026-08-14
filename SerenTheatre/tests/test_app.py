@@ -5,12 +5,6 @@ and no config knob to add one, because that's what makes it safe to point at a
 live 14B run that's nine hours in. A route table is the honest place to enforce
 that: if a POST/PUT/PATCH/DELETE ever appears, this fails.
 
-The second is that DEMO MODE CANNOT BE MISTAKEN FOR A READING. _demo.py names
-its own three mechanisms - explicit flag only, everything labelled in the data
-itself, and demo=true in the payload. All three are tested here, including the
-one that matters most: an EMPTY stage list must stay empty. A dashboard that
-quietly shows fabricated data because it found nothing real is worse than a
-blank page, and it is exactly the failure a tired person at 2am would not catch.
 """
 from __future__ import annotations
 
@@ -34,10 +28,6 @@ def empty_cfg() -> TheatreConfig:
 def client(empty_cfg) -> TestClient:
     return TestClient(create_app(empty_cfg))
 
-
-@pytest.fixture
-def demo_client(empty_cfg) -> TestClient:
-    return TestClient(create_app(empty_cfg, demo=True))
 
 
 # -- the routes exist and answer ---------------------------------------------
@@ -151,18 +141,9 @@ def test_no_route_can_write(client):
 
 def test_no_stages_means_no_stages(client):
     body = client.get("/api/state").json()
-    assert body["stages"] == []
-    assert body["demo"] is False, (
-        "an empty room reported anything other than demo=false; demo must "
-        "never be a fallback for having found nothing"
+    assert body["stages"] == [], (
+        "an empty room reported"
     )
-
-
-def test_real_mode_always_states_demo_false(client):
-    # Explicitly present, not merely absent. A scripted consumer asking
-    # state["demo"] must get a straight answer from the payload it most needs
-    # one from.
-    assert "demo" in client.get("/api/state").json()
 
 
 def test_a_missing_stage_directory_does_not_crash_the_room(tmp_path):
@@ -171,29 +152,3 @@ def test_a_missing_stage_directory_does_not_crash_the_room(tmp_path):
     r = TestClient(create_app(cfg)).get("/api/state")
     assert r.status_code == 200, "a deleted stage directory took the viewer down"
 
-
-# -- demo mode is loud --------------------------------------------------------
-
-def test_demo_mode_marks_the_payload(demo_client):
-    assert demo_client.get("/api/state").json()["demo"] is True
-
-
-def test_every_fabricated_name_carries_its_own_label(demo_client):
-    """Mechanism 2 from _demo.py: the fiction has to survive a screenshot that
-    crops the banner off."""
-    body = demo_client.get("/api/state").json()
-    assert body["stages"], "demo mode served nothing to look at"
-    for stage in body["stages"]:
-        assert "DEMO" in stage["name"].upper(), (
-            f"fabricated stage {stage['name']!r} is not labelled; cropped out "
-            f"of the banner it would read as a real run"
-        )
-
-
-def test_demo_requires_the_explicit_flag(empty_cfg):
-    """Mechanism 1: never a config key, never inferred."""
-    assert TestClient(create_app(empty_cfg)).get("/api/state").json()["demo"] is False
-    assert not hasattr(empty_cfg, "demo"), (
-        "demo became a config field; it must stay an explicit runtime flag so "
-        "it cannot be switched on by a file someone forgot they edited"
-    )

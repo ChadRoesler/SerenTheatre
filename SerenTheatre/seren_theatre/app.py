@@ -112,12 +112,10 @@ async def _updates_block(app: FastAPI) -> dict:
             "checked_at": None}
 
 
-def create_app(config: Optional[TheatreConfig] = None,
-               demo: bool = False) -> FastAPI:
+def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
     cfg = config or load_config()
     app = FastAPI(title="SerenTheatre", version=APP_VERSION)
     app.state.cfg = cfg
-    app.state.demo = demo
 
     # -- Bearer auth --
     # Empty token = open, which is the default and the right default: on
@@ -187,23 +185,12 @@ def create_app(config: Optional[TheatreConfig] = None,
 
     @app.get("/api/state")
     def state() -> dict:
-        if demo:
-            # Fabricated, and it says so in the payload so the marking survives
-            # a screenshot. NEVER a fallback for an empty stage - see _demo.py.
-            from ._demo import demo_state
-            return demo_state(cfg.refresh_seconds, APP_VERSION)
         t0 = time.time()
         stages = [scan_stage(s.name, s.resolved(), s.logs, s.rungs,
                              cfg.tail_bytes)
                   for s in cfg.stages]
         return {"generated": t0, "took_ms": round((time.time() - t0) * 1000, 1),
                 "refresh_seconds": cfg.refresh_seconds, "stages": stages,
-                # ALWAYS present, never just absent in the real case. The
-                # viewer works either way (undefined is falsy), but a scripted
-                # consumer asking state["demo"] would KeyError on exactly the
-                # payload it most needs a straight answer from. An explicit
-                # false is a claim; a missing key is a shrug.
-                "demo": False,
                 "version": APP_VERSION}
 
     @app.get("/viewer", response_class=HTMLResponse)
