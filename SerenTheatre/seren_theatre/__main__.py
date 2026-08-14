@@ -17,11 +17,6 @@ import argparse
 import json
 import sys
 
-# _describe is stdlib-only ON PURPOSE - see the module docstring. Importing
-# config here would make `--describe` need pydantic, and the moment you most
-# want a service to be able to say its own name is when its install is broken.
-from ._describe import DESCRIBE
-
 
 def _force_utf8_stdio() -> None:
     """Make stdout/stderr UTF-8 regardless of OS locale.
@@ -53,18 +48,7 @@ def main() -> None:
         help="Serve FABRICATED state so the layout can be judged with no run "
              "in flight. Loudly marked in the UI and in the payload. Never a "
              "fallback for an empty stage - an empty room is a true reading.")
-    parser.add_argument(
-        "--describe", action="store_true",
-        help="Print one line of JSON describing this service and exit 0. "
-             "ZERO side effects - Starwright builds its grid from this.")
     args = parser.parse_args()
-
-    if args.describe:
-        # One line, exit 0, nothing touched. No config load, no directory
-        # creation, no import of uvicorn. The contract is that this is safe to
-        # run against an uninstalled service on someone else's box.
-        print(json.dumps(DESCRIBE))
-        return
 
     # Everything heavy is imported LATE, below the --describe return above.
     import uvicorn

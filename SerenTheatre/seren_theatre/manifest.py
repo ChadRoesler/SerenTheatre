@@ -2,8 +2,8 @@
 
 WHY THIS IS A SECOND IMPLEMENTATION AND NOT AN IMPORT.
 
-`ms-moe` writes `msmoe-run.json` into a run directory. Theatre reads it. The
-obvious move is for Theatre to `pip install ms-moe` and import its reader, and
+`ms-moe-maker` writes `msmoe-run.json` into a run directory. Theatre reads it. The
+obvious move is for Theatre to `pip install ms-moe-maker` and import its reader, and
 that is exactly the move that would wreck the design: Theatre would then
 require a training pipeline - torch's whole world eventually - to display a
 directory. Theatre's `requires` is empty on purpose, and a stage is a directory
@@ -12,7 +12,7 @@ precisely so that watching one costs nothing.
 So this is a wire format, and both sides implement it independently, the way
 both ends of any protocol do. The cost is that the two can drift. That cost is
 paid down in tests/test_manifest_contract.py, which pins these constants
-against the real ms-moe source when a sibling checkout is present - the same
+against the real ms-moe-maker source when a sibling checkout is present - the same
 bargain as the installer/module `--describe` parity check.
 
 READ-ONLY, ABSOLUTELY. There is no writer here and there must never be one.
@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Pinned against ms_moe.manifest by tests/test_manifest_contract.py.
+# Pinned against ms_moe_maker.manifest by tests/test_manifest_contract.py.
 MANIFEST_NAME = "msmoe-run.json"
 SCHEMA_VERSION = 1
 STALE_AFTER_SECONDS = 15 * 60
@@ -100,7 +100,7 @@ class Manifest:
     refusals: List[str] = field(default_factory=list)
 
     def stage(self, stage_id: str) -> Optional[Stage]:
-        """Look one up by id. Mirrors ms_moe.manifest.Manifest.stage.
+        """Look one up by id. Mirrors ms_moe_maker.manifest.Manifest.stage.
 
         Kept symmetric with the writer on purpose: the two ends of a wire
         format are easier to reason about when the same question is spelled the

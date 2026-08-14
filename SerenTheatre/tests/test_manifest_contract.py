@@ -1,7 +1,7 @@
-"""Pin Theatre's manifest reader against ms-moe's writer.
+"""Pin Theatre's manifest reader against ms-moe-maker's writer.
 
-seren_theatre.manifest is a SECOND implementation of a format ms-moe owns, and
-that is deliberate: importing ms-moe would make a viewer depend on a training
+seren_theatre.manifest is a SECOND implementation of a format ms-moe-maker owns, and
+that is deliberate: importing ms-moe-maker would make a viewer depend on a training
 pipeline, and Theatre's `requires` is empty on purpose. Two implementations of
 one wire format is the normal cost of a protocol.
 
@@ -10,7 +10,7 @@ Exactly the same bargain as tests/test_describe_parity.py, which compares the
 shell installer's --describe against the module's: two sources that can
 disagree are only useful if something compares them.
 
-Read via `ast`, never by importing ms_moe - importing it here would create the
+Read via `ast`, never by importing ms_moe_maker - importing it here would create the
 dependency this whole arrangement exists to avoid, and the test would then pass
 for the wrong reason.
 
@@ -26,15 +26,15 @@ import pytest
 
 from seren_theatre import manifest as mf
 
-MSMOE_REL = Path("MsMoE") / "MsMoE" / "ms_moe" / "manifest.py"
+MSMOE_REL = Path("MsMoE") / "MsMoE" / "ms_moe_maker" / "manifest.py"
 
 
 def _find_ms_moe_manifest() -> Path | None:
     here = Path(__file__).resolve()
     for parent in here.parents:
         for candidate in (parent / MSMOE_REL,
-                          parent / "MsMoE" / "ms_moe" / "manifest.py",
-                          parent / "ms_moe" / "manifest.py"):
+                          parent / "MsMoE" / "ms_moe_maker" / "manifest.py",
+                          parent / "ms_moe_maker" / "manifest.py"):
             if candidate.is_file():
                 return candidate
     return None
@@ -44,7 +44,7 @@ def _literal(node: ast.AST):
     """Evaluate a literal, INCLUDING simple arithmetic between literals.
 
     ast.literal_eval alone is not enough and the difference is not academic:
-    ms-moe spells its timeout `15 * 60`, which is a BinOp, so literal_eval
+    ms-moe-maker spells its timeout `15 * 60`, which is a BinOp, so literal_eval
     raises and the constant reads as None - and this file then reports a
     drift that does not exist. A contract test that cries wolf gets muted,
     and a muted contract test is worse than none.
@@ -107,7 +107,7 @@ def test_format_constants_match(writer, name):
     theirs = writer.get(name)
     ours = getattr(mf, name)
     assert theirs == ours, (
-        f"{name}: ms-moe writes {theirs!r}, seren-theatre reads {ours!r}. "
+        f"{name}: ms-moe-maker writes {theirs!r}, seren-theatre reads {ours!r}. "
         f"The two ends of the format have drifted - a viewer that looks for "
         f"the wrong filename reports every instrumented run as uninstrumented, "
         f"silently.")
@@ -128,7 +128,7 @@ def test_no_status_exists_that_the_viewer_cannot_name(writer):
     ours = set(mf.STATUSES)
     missing = theirs - ours
     assert not missing, (
-        f"ms-moe can emit {sorted(missing)} and seren-theatre does not know "
+        f"ms-moe-maker can emit {sorted(missing)} and seren-theatre does not know "
         f"those statuses. They would render as 'unknown' - which is honest, "
         f"but this is the moment to teach the viewer instead.")
 
@@ -145,5 +145,5 @@ def test_the_skip_cannot_become_permanent_and_silent():
     if not any((p / "MsMoE").is_dir() for p in here.parents):
         pytest.skip("no MsMoE checkout nearby; nothing to assert")
     assert source is not None, (
-        "MsMoE is present but ms_moe/manifest.py was not found. The contract "
+        "MsMoE is present but ms_moe_maker/manifest.py was not found. The contract "
         "check is now blind - fix the path in MSMOE_REL.")

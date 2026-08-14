@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from seren_theatre._describe import DEFAULT_PORT
 from seren_theatre.config import TheatreConfig, load_config
 
 

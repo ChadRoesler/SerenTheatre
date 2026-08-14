@@ -44,16 +44,6 @@ try:
 except ImportError:  # pragma: no cover - pyyaml is a hard dep, but be lenient
     _HAS_YAML = False
 
-
-# ONE source of truth, two readers. The port this service BINDS to and the port
-# it ADVERTISES to Starwright come from the same constant, because the
-# `seren/port-map` fact in Loci records what happens when they don't: Workbench
-# bound 7425 while its installer said 7444, so an installed node answered where
-# the docs didn't. Re-exported here so `from .config import DEFAULT_PORT` still
-# reads naturally at the call sites.
-from ._describe import ACCENT, DEFAULT_PORT  # noqa: F401 - re-export
-
-
 class StageConfig(BaseModel):
     """One watched directory. A 'stage' is a thing being made, in public."""
 

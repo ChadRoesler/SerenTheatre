@@ -39,11 +39,11 @@ updates = []
 # Watching a run has never required being able to start one, which is why this
 # is an extra and not a dependency. Mandate is not ethos.
 #
-# All it pulls is the ms-moe CLI (about a megabyte, no torch). The heavy
+# All it pulls is the ms-moe-maker CLI (about a megabyte, no torch). The heavy
 # machinery lives in whatever venv the pipeline trains in - stagehand forks a
 # command, it does not import a trainer.
 stagehand = [
-    "ms-moe>=0.1",
+    "ms-moe-maker>=0.1",
 ]
 
 [project.scripts]
