@@ -75,10 +75,48 @@ def test_a_failed_check_is_never_reported_as_good_news(body):
 
 def test_disabling_updates_in_config_is_honoured():
     """The bug this was written for: TheatreConfig had no updates section, so
-    pydantic silently dropped the `updates: {enabled: false}` block the
-    installer writes for --no-updates. It parsed clean and did nothing."""
+    the `updates: {enabled: false}` block the installer writes for
+    --no-updates was silently dropped. It parsed clean and did nothing."""
     cfg = TheatreConfig(**{"updates": {"enabled": False}})
     assert cfg.updates.enabled is False
+
+
+def test_the_installers_no_updates_block_survives_a_round_trip(tmp_path,
+                                                               monkeypatch):
+    """The same off-switch, down the route it actually travels.
+
+    The test above constructs the config directly, which is a PROXY for the
+    real thing - and the original bug was never about constructors. It was
+    about a yaml block written by seren-theatre-setup that nothing read. So
+    this writes the file the installer writes, loads it the way the service
+    loads it, and asserts the switch survived the trip.
+
+    Worth keeping both: the constructor form pins the coercion, this pins the
+    path. Only one of them would have caught the original bug, and it is not
+    the tidy one.
+    """
+    from pathlib import Path
+
+    from seren_theatre.config import load_config
+
+    home = tmp_path / "home"
+    (home / "seren-theatre").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("SEREN_THEATRE_CONFIG", raising=False)
+    monkeypatch.delenv("SEREN_THEATRE_UPDATES_ENABLED", raising=False)
+
+    # Verbatim shape of what the installer writes for --no-updates.
+    (home / "seren-theatre" / "seren-theatre.yaml").write_text(
+        "server:\n  host: 127.0.0.1\n  port: 7427\n"
+        "updates:\n  enabled: false\n",
+        encoding="utf-8")
+
+    cfg = load_config()
+    assert cfg.updates.enabled is False, (
+        "the installer's updates block was parsed and ignored - an off-switch "
+        "that reports success and leaves the thing on")
+    # And the block did not cost us the rest of the file.
+    assert (cfg.host, cfg.port) == ("127.0.0.1", 7427)
 
 
 def test_the_env_off_switch_is_honoured(tmp_path, monkeypatch):
