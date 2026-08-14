@@ -48,15 +48,15 @@ __all__ = ["ACCENT", "DEFAULT_PORT", "SERVICE", "create_app"]
 #
 # ONE CONSTANT, TWO CONSUMERS, ON PURPOSE. This value is the service's identity
 # in GET / (which Lodestar and Symposium read) AND the accent handed to the
-# viewer shell. They were previously two different literals - #000000 in the
-# installer's --describe, #171717 hardcoded at the render_from_dir call - so
+# viewer shell. They were previously two different literals - #0a0a0a in the
+# installer's --describe, #0a0a0a hardcoded at the render_from_dir call - so
 # the colour on a service card and the colour on its own page disagreed, and
 # nothing anywhere compared them. Naming it once removes the possibility.
 #
 # It also stops being a NameError. Removing _describe.py took the definition
 # with it and left the reference on the SERVICE line below, so `import
 # seren_theatre.app` raised and every entry point into this package was dead.
-ACCENT = "#171717"
+ACCENT = "#0a0a0a"
 
 try:                                    # meninges is the family's shell
     from seren_meninges.viewer import render_from_dir
