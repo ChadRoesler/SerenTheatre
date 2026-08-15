@@ -294,3 +294,109 @@ function schedule() {
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 
 load().then(schedule);
+
+// -- backstage --------------------------------------------------------------
+// Present in the pack always, ENABLED only when GET / says the router is
+// mounted. The tab being hidden is cosmetic; the guarantee is that on a base
+// install the routes below do not exist to be called.
+
+let BACKSTAGE = null;
+
+async function loadBackstage() {
+    try {
+        const root = await api('/');
+        const tab = $('tab-backstage');
+        if (!root.backstage) {
+            if (tab) tab.hidden = true;
+            return;
+        }
+        if (tab) tab.hidden = false;
+        BACKSTAGE = await api('/api/backstage');
+
+        $('bs-where').textContent = `recipes · ${BACKSTAGE.recipes_dir}`;
+        const list = $('bs-list');
+        list.innerHTML = '<option value="">— new recipe —</option>'
+            + BACKSTAGE.recipes.map(
+                (r) => `<option value="${escapeHtml(r.name)}">${escapeHtml(r.name)}</option>`
+            ).join('');
+
+        // The form is built from the LIVE registries, so a kind or validator
+        // added by a plugin shows up here without this file having heard of
+        // it. A hardcoded list would make "extensible" true only for us.
+        const kinds = (BACKSTAGE.kinds || []).map(
+            (k) => `<li><code>${escapeHtml(k.name)}</code> — ${escapeHtml(k.summary)}`
+                 + (k.requires.length ? ` <span class="hint">(needs ${
+                     k.requires.map(escapeHtml).join(', ')})</span>` : '')
+                 + `</li>`).join('');
+        const vals = (BACKSTAGE.validators || []).map(
+            (v) => `<li><code>${escapeHtml(v.name)}</code> — ${escapeHtml(v.summary)}</li>`
+        ).join('');
+        $('bs-help').innerHTML =
+            `<b>source kinds on this box</b><ul>${kinds}</ul>`
+            + `<b>validators</b><ul>${vals}</ul>`;
+    } catch (e) {
+        const tab = $('tab-backstage');
+        if (tab) tab.hidden = true;
+    }
+}
+
+function bsShow(ok, text) {
+    $('bs-out').innerHTML =
+        `<pre class="${ok ? 'ok' : 'bad'}">${escapeHtml(text || '(no output)')}</pre>`;
+}
+
+async function bsPost(path, body) {
+    const r = await api(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    return r;
+}
+
+document.addEventListener('click', async (e) => {
+    const id = e.target && e.target.id;
+    if (!id || !id.startsWith('bs-')) return;
+    const name = $('bs-name').value.trim() || $('bs-list').value;
+    const text = $('bs-text').value;
+
+    try {
+        if (id === 'bs-validate') {
+            const out = await bsPost('/api/backstage/validate', { name: name || 'draft', text });
+            bsShow(out.ok, out.output);
+        } else if (id === 'bs-save') {
+            if (!name) return bsShow(false, 'give it a name first');
+            const out = await bsPost('/api/backstage/recipes', { name, text });
+            // The validation result is shown even on a successful save. Saving
+            // an invalid recipe is allowed - a draft is a legitimate thing to
+            // keep - but it must never LOOK clean.
+            bsShow(out.validation.ok,
+                   `saved ${out.saved}\n\n${out.validation.output}`);
+            await loadBackstage();
+        } else if (id === 'bs-run') {
+            if (!name) return bsShow(false, 'save it first, then run it');
+            const out = await bsPost('/api/backstage/run',
+                                     { name, dryrun: $('bs-dryrun').checked });
+            // No live channel back. The run is watched through the manifest
+            // and the log exactly like one started by hand in a terminal -
+            // a second way to know what is happening is a second opinion.
+            bsShow(true, `started pid ${out.pid} in stage ${out.stage}\n\n`
+                       + `${out.command_line}\n\n`
+                       + `Watch it on the Stages tab. It survives this viewer `
+                       + `restarting.`);
+            load();
+        }
+    } catch (err) {
+        bsShow(false, (err && err.message) || String(err));
+    }
+});
+
+document.addEventListener('change', async (e) => {
+    if (e.target && e.target.id === 'bs-list' && e.target.value) {
+        const r = await api('/api/backstage/recipes/' + encodeURIComponent(e.target.value));
+        $('bs-text').value = r.text;
+        $('bs-name').value = r.name;
+    }
+});
+
+loadBackstage();

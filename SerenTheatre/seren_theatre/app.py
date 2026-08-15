@@ -158,6 +158,27 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
         app.state.updates = None
         diag(f"[seren-theatre] update checking unavailable ({exc})")
 
+    # -- Backstage, if and only if [stagehand] is installed --
+    #
+    # THIS try/except IS THE READ-ONLY GUARANTEE. Not a config flag, not a
+    # feature toggle - a plain install cannot import this module, so the write
+    # verbs do not exist to be turned on. `pip install seren-theatre` is a
+    # viewer and tests/test_app.py asserts it has zero mutating routes;
+    # `[stagehand]` is a workshop. The install shape IS the promise.
+    #
+    # Catching Exception rather than ImportError on purpose: a half-installed
+    # or version-skewed extra must leave a working VIEWER behind, not take the
+    # whole service down. Watching a run has never required being able to
+    # start one, and that stays true when the starting half is broken.
+    app.state.backstage = False
+    try:
+        from .backstage import router as _backstage_router
+        app.include_router(_backstage_router())
+        app.state.backstage = True
+        diag("[seren-theatre] backstage mounted ([stagehand] is installed)")
+    except Exception as exc:            # noqa: BLE001 - viewer must survive
+        diag(f"[seren-theatre] backstage not mounted ({exc})")
+
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok", "service": SERVICE["name"], "version": APP_VERSION}
@@ -177,9 +198,17 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
             stagehand = _stagehand_available()
         except Exception:       # noqa: BLE001 - never let a capability probe 500
             stagehand = False
+        from .stageguard import mutating_routes
         return {**SERVICE, "version": APP_VERSION,
                 "stages": [s.name for s in cfg.stages],
                 "stagehand": stagehand,
+                # Whether the optional write half is mounted, and EXACTLY what
+                # it added. A person who installed [stagehand] should be able
+                # to see the write surface from outside without reading the
+                # source; a person who did not should be able to prove the
+                # list is empty.
+                "backstage": bool(getattr(app.state, "backstage", False)),
+                "write_routes": [p for p, _ in mutating_routes(app)],
                 "updates": await _updates_block(app),
                 "viewer": "/viewer", "state": "/api/state"}
 
