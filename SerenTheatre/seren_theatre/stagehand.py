@@ -48,6 +48,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional, Sequence
 
@@ -207,3 +208,94 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  BACKSTAGE - the half that writes, and the reasons it is allowed to
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Everything above this line is the sibling COMMAND. Everything below is the
+# optional ROUTER that seren_theatre.app mounts only when this module imports,
+# which happens only when [stagehand] is installed.
+#
+# That is what turns Theatre's read-only promise from a rule into a property of
+# what you installed:
+#
+#     pip install seren-theatre               -> a viewer. Zero write verbs.
+#     pip install seren-theatre[stagehand]    -> a workshop.
+#
+# tests/test_app.py asserts the first half; the router below is the second.
+#
+# THE INVARIANT STILL HOLDS, and holds harder than before. Backstage writes
+# recipes, and a recipe is an INPUT to a build rather than an artifact of one,
+# so it lives in cfg.recipes_dir() - outside every watched stage by
+# construction. Every path that reaches disk goes through
+# stageguard.assert_outside_stages first, which resolves symlinks and `..` and
+# hands back the approved path so a handler cannot check one path and write
+# another.
+#
+# And the run itself opens NOTHING. `--log-file` is passed to the child so the
+# BUILDER writes its own log into the stage, which it was always entitled to do.
+# If stagehand held that file handle, Theatre would be the process writing into
+# a stage and the invariant would be true only by a technicality about which
+# module the descriptor lived in.
+
+import shlex
+from typing import Any, Dict
+
+DETACHED_MARKER = ".stagehand-run.json"
+
+
+def run_detached(recipe: Path, *, cwd: Path, log_file: Optional[Path] = None,
+                 events_file: Optional[Path] = None,
+                 extra: Sequence[str] = ()) -> Dict[str, Any]:
+    """Start a build that OUTLIVES this process. Returns {pid, argv, ...}.
+
+    A build is hours. Theatre restarts - a config change, a service bounce, an
+    upgrade - and a run started from Backstage must not die because the viewer
+    that launched it went away. That is the same reasoning as run-msmoe.sh's
+    --detach flag, which exists because "don't let that be how a 14B rung ends"
+    was written after it nearly was.
+
+    So: new session/process group, no inherited stdio, no wait(). The parent
+    forgets the child immediately and learns everything afterwards the same way
+    it learns about a run started by hand in a terminal - from the manifest and
+    the log. There is deliberately NO privileged channel for Backstage runs,
+    because a second way to know what is happening is a second opinion, and two
+    opinions is how a dashboard starts disagreeing with itself.
+    """
+    argv = list(resolve_command()) + [BUILD_VERB, str(recipe), "--json"]
+    if log_file:
+        argv += ["--log-file", str(log_file)]
+    if events_file:
+        argv += ["--events-file", str(events_file)]
+    argv.extend(extra)
+
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+
+    kwargs: Dict[str, Any] = {}
+    if os.name == "nt":
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: no console, and Ctrl-C
+        # in whatever launched Theatre does not reach the build.
+        kwargs["creationflags"] = 0x00000008 | 0x00000200
+    else:
+        # A new session, so closing the SSH connection Theatre was started from
+        # does not SIGHUP a nine-hour training run.
+        kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(
+        argv, cwd=str(cwd), env=env,
+        stdin=subprocess.DEVNULL,
+        # DEVNULL, not PIPE. A pipe nobody reads fills its buffer and blocks
+        # the child forever - the classic detach bug, and it would look exactly
+        # like a training run that hung mid-stage. The child writes its own
+        # files; nothing here needs its stdout.
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        **kwargs)
+
+    return {"pid": proc.pid, "argv": argv, "cwd": str(cwd),
+            "recipe": str(recipe), "started": time.time(),
+            "log_file": str(log_file) if log_file else None,
+            "events_file": str(events_file) if events_file else None,
+            "command_line": " ".join(shlex.quote(a) for a in argv)}

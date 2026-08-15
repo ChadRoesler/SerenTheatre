@@ -203,3 +203,23 @@ body { font-size: 14px; }
 .mile { color: var(--ok); font-size: 12px; margin-top: 8px; }
 
 code { color: var(--muted); font-size: 12px; }
+
+/* -- backstage ----------------------------------------------------------- */
+#bs-text {
+    width: 100%; min-height: 340px; margin-top: 10px; padding: 12px;
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px; resize: vertical;
+}
+#bs-out { margin-top: 10px; }
+#bs-out pre {
+    margin: 0; padding: 12px; white-space: pre-wrap; word-break: break-word;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+#bs-out .ok { border-color: var(--good, #7fd88f); }
+#bs-out .bad { border-color: var(--bad, #ff6e8a); }
+.toolbar select, .toolbar input[type=text], .toolbar input:not([type]) {
+    color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+}

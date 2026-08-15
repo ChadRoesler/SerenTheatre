@@ -10,3 +10,10 @@
      tabbar, before the click. -->
 <button class="tab" data-tab="stages">Stages <span class="tab-count" id="count-stages"></span></button>
 <button class="tab" data-tab="logs">Logs <span class="tab-count" id="count-logs"></span></button>
+<!-- Backstage is HIDDEN, not absent, when [stagehand] is not installed.
+     A tab with no panel is a button that does nothing, and
+     test_every_tab_has_a_panel_and_every_panel_a_tab enforces the
+     pairing - so it ships in the pack and scripts.js sets hidden from
+     what GET / reports. The markup is inert either way; the ROUTES are
+     what does or does not exist. -->
+<button class="tab" data-tab="backstage" id="tab-backstage" hidden>Backstage</button>

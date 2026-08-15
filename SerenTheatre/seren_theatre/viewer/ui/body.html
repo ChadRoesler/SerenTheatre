@@ -20,3 +20,23 @@
     </div>
     <div id="logs-body"></div>
 </section>
+
+<section class="view" id="backstage">
+    <div class="toolbar">
+        <span class="hint" id="bs-where">recipes</span>
+        <div class="spacer"></div>
+        <select id="bs-list"><option value="">— new recipe —</option></select>
+        <input id="bs-name" placeholder="name" size="16">
+        <button id="bs-validate">Validate</button>
+        <button id="bs-save">Save</button>
+        <button id="bs-run">Run</button>
+        <label class="hint"><input type="checkbox" id="bs-dryrun" checked> dryrun</label>
+    </div>
+    <!-- Plain textarea on purpose: no CDN editor. The pack has to render on a
+         headless box over an SSH tunnel with nothing installed, which is the
+         same reason Starwright is a TUI. -->
+    <textarea id="bs-text" spellcheck="false"
+              placeholder="# paste or write a recipe"></textarea>
+    <div id="bs-out"></div>
+    <div id="bs-help" class="empty"></div>
+</section>

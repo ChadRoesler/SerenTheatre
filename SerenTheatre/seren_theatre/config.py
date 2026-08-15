@@ -165,6 +165,19 @@ class TheatreConfig:
     # is busy. That would be an unusually stupid way to perturb a measurement.
     tail_bytes: int = 262_144
     refresh_seconds: float = 5.0
+    # WHERE BACKSTAGE SAVES RECIPES, and it is deliberately OUTSIDE every
+    # stage. A recipe is an input to a build, not an artifact of one, so it has
+    # no business living in a directory Theatre is watching - and putting it
+    # here means "no write resolves inside a stage" holds by CONSTRUCTION
+    # rather than by a check that has to keep being right.
+    #
+    # Empty means ~/seren-theatre/recipes. Resolved lazily so a test can move
+    # HOME without this having been frozen at import.
+    recipes: str = ""
+
+    def recipes_dir(self) -> Path:
+        raw = self.recipes or str(Path.home() / "seren-theatre" / "recipes")
+        return Path(os.path.expanduser(raw)).resolve()
 
     def __post_init__(self) -> None:
         """Coerce raw dicts into their blocks, the way pydantic used to.
@@ -330,6 +343,9 @@ def _apply_env_overrides(cfg: TheatreConfig) -> TheatreConfig:
     # A stage from the environment, so a one-off `SEREN_THEATRE_STAGE=$PWD
     # python -m seren_theatre` works with no config file at all. That is the
     # case this service will actually be started in nine times out of ten.
+    if v := env.get("SEREN_THEATRE_RECIPES"):
+        cfg.recipes = v
+
     if v := env.get("SEREN_THEATRE_STAGE"):
         cfg.stages.append(StageConfig(name=Path(v).name or "stage", path=v))
 
@@ -356,5 +372,6 @@ def load_config(path: Optional[str] = None) -> TheatreConfig:
         tail_bytes=_int(data.get("tail_bytes"), default.tail_bytes),
         refresh_seconds=_float(data.get("refresh_seconds"),
                                default.refresh_seconds),
+        recipes=str(data.get("recipes") or ""),
     )
     return _apply_env_overrides(cfg)
