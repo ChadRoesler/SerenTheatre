@@ -27,6 +27,7 @@ is how it happens.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -117,27 +118,135 @@ def _stage_for(cfg, name: Optional[str]):
                              f"{[s.name for s in stages]}")
 
 
+DESCRIBE_TIMEOUT = 20.0
+
+
+def _ask_the_box() -> Optional[Dict[str, Any]]:
+    """`ms-moe-maker describe` - the documented way to learn what an install offers.
+
+    FORKED, NOT IMPORTED, for the reason this module already gives about
+    validation: a second copy of a fact living in the viewer drifts from the
+    one the builder actually uses. This function used to be a hand-picked list
+    of `from ms_moe_maker import ...` calls, and it drifted in both directions
+    at once - the craft form showed a validator registry that `--describe` did
+    not report, and `--describe` reported a reasoning table the craft form
+    could not see. Neither side was wrong on its own; there were simply two
+    answers to one question.
+
+    Forking also asks the RIGHT install. `import ms_moe_maker` resolves inside
+    whatever interpreter Theatre happens to be running under; the console
+    script is the one a person types and the one stagehand actually execs for
+    validate and run. On a box where those differ - a viewer in one venv, the
+    builder in another - importing describes a package nobody is going to
+    build with.
+
+    NOT CACHED, deliberately. The whole argument for surfacing the reasoning
+    table is that somebody can drop a yaml at ~/.msmoe/reasoning.yaml and carry
+    on without waiting for a release; a cache would hand that person a stale
+    table and call it the box. The old import path re-read the yaml on every
+    call too, so this costs a process where it used to cost a file read, on a
+    request that happens when a tab opens rather than in a loop.
+
+    Returns None - never raises - when the command is absent, slow, unhappy or
+    unparseable. Every one of those is "the box did not answer", and the caller
+    turns it into a visible error rather than a guess.
+    """
+    try:
+        argv = stagehand.resolve_command() + ["describe"]
+    except stagehand.StagehandUnavailable:
+        return None
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              timeout=DESCRIBE_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+# What the craft form shows about the box, beyond the registries themselves.
+# Read off whatever `--describe` returned rather than restated here, so a key
+# the CLI learns to report needs no edit in this file.
+_BOX_KEYS = ("version", "templates", "tiers", "gates", "eval_modes",
+             "commands", "recipe_schema_version")
+
+
+def _rows(value: Any, key: str = "name") -> List[Dict[str, Any]]:
+    """Normalise a registry list that may be rows or may be bare names.
+
+    STRICT ON WHAT WE WRITE, LENIENT ABOUT WHAT WE READ. `describe` reported
+    `kinds` as bare strings until it was changed to report rows like
+    `validators` does, and a viewer is going to meet installs on both sides of
+    that for as long as people pin versions - which they should. Refusing the
+    old shape would mean a Theatre upgrade silently emptied the craft form of
+    anyone who had not also upgraded the builder.
+
+    A bare name becomes a row with just a name, and the form renders what it
+    has. Degrading to less detail is honest; showing nothing is not.
+    """
+    out: List[Dict[str, Any]] = []
+    for item in value or []:
+        if isinstance(item, dict):
+            out.append(item)
+        elif isinstance(item, str):
+            out.append({key: item})
+    return out
+
+
 def _registries() -> Dict[str, Any]:
-    """The corpus kinds and validators available on THIS box.
+    """What THIS box offers - corpus kinds, validators, the reasoning table.
 
     Backstage's craft form is built from these rather than from a hardcoded
-    list in the viewer, so a kind or validator registered by a plugin appears
-    in the form without the viewer having heard of it. That is the difference
-    between extensible in principle and extensible in fact.
+    list in the viewer, so a kind, validator or reasoning family registered on
+    someone's machine appears in the form without the viewer having heard of
+    it. That is the difference between extensible in principle and extensible
+    in fact.
+
+    The reasoning table earns its place here twice over. It is the registry
+    users are actively TOLD to extend - a model family shipping a new delimiter
+    is meant to be answerable with a yaml on the box, not a release - and it is
+    the one whose misconfiguration is silent. An unknown corpus kind refuses
+    and an unavailable validator reports `unmeasurable`; a wrong tag style is a
+    wrong ANSWER, because the splitter finds no delimiters, eval reports "did
+    not reason", and the think block gets scored as though it were the answer.
     """
-    out: Dict[str, Any] = {"kinds": [], "validators": [], "errors": []}
-    try:
-        from ms_moe_maker import corpus
-        out["kinds"] = corpus.describe()
-        out["errors"].extend(corpus.load_errors())
-    except Exception as exc:  # noqa: BLE001
-        out["errors"].append(f"corpus registry unavailable: {exc}")
-    try:
-        from ms_moe_maker import validators
-        out["validators"] = validators.describe()
-        out["errors"].extend(validators.load_errors())
-    except Exception as exc:  # noqa: BLE001
-        out["errors"].append(f"validator registry unavailable: {exc}")
+    out: Dict[str, Any] = {"kinds": [], "validators": [], "reasoning": {},
+                           "box": {}, "errors": []}
+
+    box = _ask_the_box()
+    if box is None:
+        out["errors"].append(
+            "could not ask the box: `ms-moe-maker describe` did not answer. "
+            "The craft form is showing nothing rather than guessing.")
+        return out
+
+    out["kinds"] = _rows(box.get("kinds"))
+    out["validators"] = _rows(box.get("validators"))
+    out["reasoning"] = box.get("reasoning") or {}
+    out["box"] = {k: box[k] for k in _BOX_KEYS if k in box}
+
+    # Problems the box reported about its own registries. `registry_errors`
+    # covers the entry-point loaders; the reasoning table carries its own under
+    # `warnings`, which predates that key.
+    out["errors"].extend(box.get("registry_errors") or [])
+    out["errors"].extend(f"reasoning table: {w}"
+                         for w in (out["reasoning"].get("warnings") or []))
+
+    # An older writer answers `describe` without the newer keys. Say which ones
+    # are missing rather than rendering an empty panel that looks like an empty
+    # box - the difference between "this install has no validators" and "this
+    # install is too old to say" is the whole point of keeping unmeasurable
+    # apart from fail.
+    for key in ("validators", "reasoning"):
+        if key not in box:
+            out["errors"].append(
+                f"this ms-moe-maker does not report {key!r} from `describe`; "
+                f"upgrade it to see that half of the form.")
     return out
 
 
