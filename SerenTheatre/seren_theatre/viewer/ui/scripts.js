@@ -331,9 +331,54 @@ async function loadBackstage() {
         const vals = (BACKSTAGE.validators || []).map(
             (v) => `<li><code>${escapeHtml(v.name)}</code> — ${escapeHtml(v.summary)}</li>`
         ).join('');
+        // The tag table is the third registry, and the one people are told to
+        // extend: a family shipping a new delimiter is meant to be answerable
+        // with a yaml on the box, not a release. Showing the PACKAGED table to
+        // somebody who already dropped ~/.msmoe/reasoning.yaml would be worse
+        // than showing nothing, because it would look complete. The delimiters
+        // are printed because that is what a wrong entry costs you: the
+        // splitter finds nothing, eval says "did not reason", and the think
+        // block gets scored as the answer.
+        const rz = BACKSTAGE.reasoning || {};
+        const styleOf = {};
+        (rz.styles || []).forEach((s) => { styleOf[s.key] = s; });
+        const fams = (rz.families || []).map((f) => {
+            const s = styleOf[f.style];
+            const tags = s
+                ? `<code>${escapeHtml(s.open)}</code>…<code>${escapeHtml(s.close)}</code>`
+                  + (s.interwoven ? ' <span class="hint">(interwoven)</span>' : '')
+                : `<span class="hint">unknown style ${escapeHtml(f.style)}</span>`;
+            return `<li><code>${escapeHtml(f.key)}</code> — ${escapeHtml(f.name)} `
+                 + `→ ${tags}</li>`;
+        }).join('');
+
+        // WHAT THE BOX SAID ABOUT ITSELF. Read off whatever `describe`
+        // returned rather than listed here, so a key the CLI learns to report
+        // shows up with no edit in this file - the same reason the registries
+        // above are not a hardcoded list.
+        const box = BACKSTAGE.box || {};
+        const boxRow = (k, v) => `<li><code>${escapeHtml(k)}</code> — ${
+            escapeHtml(Array.isArray(v) ? v.join(', ') : String(v))}</li>`;
+        const boxRows = Object.keys(box).map((k) => boxRow(k, box[k])).join('');
+
+        // ERRORS WERE NEVER PAINTED. A corpus kind or validator whose entry
+        // point failed to import is simply absent from the lists above, which
+        // looks exactly like one that was never installed - so the panel read
+        // as a healthy box either way. A registry that could not load has to
+        // say so on the screen, for the same reason eval keeps `unmeasurable`
+        // apart from `fail` all the way to the front.
+        const errs = (BACKSTAGE.errors || []).map(
+            (e) => `<li>${escapeHtml(e)}</li>`).join('');
+
         $('bs-help').innerHTML =
-            `<b>source kinds on this box</b><ul>${kinds}</ul>`
-            + `<b>validators</b><ul>${vals}</ul>`;
+            (errs ? `<b class="warn">the box could not answer everything</b>`
+                  + `<ul>${errs}</ul>` : '')
+            + `<b>source kinds on this box</b><ul>${kinds}</ul>`
+            + `<b>validators</b><ul>${vals}</ul>`
+            + (fams
+                ? `<b>reasoning families on this box</b><ul>${fams}</ul>`
+                : '')
+            + (boxRows ? `<b>this install</b><ul>${boxRows}</ul>` : '');
     } catch (e) {
         const tab = $('tab-backstage');
         if (tab) tab.hidden = true;

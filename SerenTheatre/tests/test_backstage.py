@@ -149,59 +149,116 @@ def test_the_form_is_built_from_the_live_registries(client):
     body = client.get("/api/backstage").json()
     assert {"hf", "local", "synth"} <= {k["name"] for k in body["kinds"]}
     assert {"contains", "syntax"} <= {v["name"] for v in body["validators"]}
+    # THE THIRD REGISTRY. It was missing from this payload while the other two
+    # were here, which is backwards: the tag table is the one users are told to
+    # extend, and the one whose misconfiguration is a silent wrong ANSWER
+    # rather than a refusal.
+    fams = {f["key"] for f in body["reasoning"]["families"]}
+    assert {"deepseek", "qwen", "llama"} <= fams, body["reasoning"]
+    assert {"xml", "r1"} <= {s["key"] for s in body["reasoning"]["styles"]}
+    assert not body["errors"], body["errors"]
 
 
-# ── the detached launcher ───────────────────────────────────────────────────
+def test_a_reasoning_family_added_on_this_box_reaches_the_form(
+        client, tmp_path, monkeypatch):
+    """The whole argument for surfacing this registry rather than hardcoding it.
 
-def test_a_run_hands_the_child_paths_and_opens_no_files(client, tmp_path,
-                                                        monkeypatch):
-    """Theatre must not hold a file handle inside a stage.
-
-    The log belongs in the stage - that is how Theatre can see it - so the
-    launcher passes --log-file and the BUILDER opens it. If stagehand held that
-    descriptor, Theatre would be the process writing into a stage and the
-    invariant would be true only by a technicality about which module the
-    handle lived in.
+    A model family shipping a new delimiter must not have to wait for a
+    release - the documented answer is to drop a yaml on the box. A form built
+    from the PACKAGED table would show that person a table they have already
+    moved past, and the cost of being wrong here is not a refusal: a tag style
+    the splitter cannot find scores the whole think block as the answer.
     """
-    from seren_theatre import stagehand
+    user_table = tmp_path / "reasoning.yaml"
+    user_table.write_text(
+        "TagStyles:\n"
+        "  - Key: acme_fence\n"
+        "    TagStyleName: Acme Reasoning Fence\n"
+        '    OpeningTag: "<<<reason"\n'
+        '    ClosingTag: "reason>>>"\n'
+        "    Interwoven: false\n"
+        "Families:\n"
+        "  - Key: acme\n"
+        "    FamilyName: Acme Thinkers\n"
+        "    Models: [Acme-R2, acme-thinker]\n"
+        "    PreferredStyle: acme_fence\n", encoding="utf-8")
+    monkeypatch.setenv("MSMOE_REASONING", str(user_table))
 
-    captured = {}
-
-    class FakeProc:
-        pid = 4242
-
-    def fake_popen(argv, **kwargs):
-        captured["argv"] = argv
-        captured["kwargs"] = kwargs
-        return FakeProc()
-
-    # Save FIRST, with the real subprocess: saving forks `ms-moe-maker
-    # validate`, which uses subprocess.run - and run() uses Popen as a context
-    # manager, so a fake that is not one breaks an unrelated code path. Fake
-    # only what this test is about, and only once it is needed.
-    client.post("/api/backstage/recipes", json={"name": "dnd", "text": RECIPE})
-    monkeypatch.setattr(stagehand.subprocess, "Popen", fake_popen)
-    r = client.post("/api/backstage/run", json={"name": "dnd", "dryrun": True})
-    assert r.status_code == 200, r.text
-    assert r.json()["pid"] == 4242
-
-    argv = captured["argv"]
-    assert "--log-file" in argv and "--events-file" in argv
-    assert "--dryrun" in argv
-    # The log path points INTO the stage, and that is correct - the child
-    # writes it. What matters is that no handle was opened here.
-    log = argv[argv.index("--log-file") + 1]
-    assert str(tmp_path / "lab") in log
-
-    kw = captured["kwargs"]
-    # DEVNULL, never PIPE: a pipe nobody reads fills and blocks the child
-    # forever, which looks exactly like a training run hung mid-stage.
-    import subprocess as sp
-    assert kw["stdout"] == sp.DEVNULL and kw["stderr"] == sp.DEVNULL
-    # And genuinely detached, or the run dies when Theatre restarts.
-    assert kw.get("start_new_session") or kw.get("creationflags")
+    body = client.get("/api/backstage").json()
+    fams = {f["key"] for f in body["reasoning"]["families"]}
+    assert "acme" in fams, (
+        f"a family added on this box did not reach the form: {sorted(fams)}")
+    # Layers merge BY NAME. Adding one family must not cost the shipped ones -
+    # a form that swapped the table for the user's file would be worse than one
+    # that ignored it, because it would look complete.
+    assert {"deepseek", "kimi", "llama", "openthink", "qwen"} <= fams, sorted(fams)
+    styles = {s["key"]: s for s in body["reasoning"]["styles"]}
+    assert styles["acme_fence"]["open"] == "<<<reason"
 
 
-def test_running_an_absent_recipe_is_a_404_not_a_launch(client):
-    assert client.post("/api/backstage/run",
-                       json={"name": "nope"}).status_code == 404
+def test_the_form_asks_the_box_rather_than_importing_it(monkeypatch):
+    """The architectural property, pinned.
+
+    Backstage forks `ms-moe-maker describe` for the same reason this module
+    already forks `ms-moe-maker validate`: a second copy of a fact living in
+    the viewer drifts from the one the builder uses. It did drift - the craft
+    form showed a validator registry `describe` did not report, while
+    `describe` reported a reasoning table the form could not see.
+
+    If this ever goes back to `from ms_moe_maker import ...`, stubbing the fork
+    stops changing the answer and this fails.
+    """
+    from seren_theatre import backstage as bs
+    monkeypatch.setattr(bs, "_ask_the_box", lambda: {
+        "kinds": [{"name": "invented", "summary": "not a real kind"}],
+        "validators": [], "reasoning": {}, "templates": ["only-this"]})
+    out = bs._registries()
+    assert [k["name"] for k in out["kinds"]] == ["invented"]
+    assert out["box"]["templates"] == ["only-this"]
+
+
+def test_a_box_that_cannot_answer_shows_nothing_rather_than_a_guess(monkeypatch):
+    """`describe` absent, slow, unhappy or unparseable are all one thing.
+
+    A viewer that filled the gap from its own imports would be describing a
+    package nobody is going to build with - Theatre and the console script can
+    live in different venvs, which is why stagehand forks in the first place.
+    """
+    from seren_theatre import backstage as bs
+    monkeypatch.setattr(bs, "_ask_the_box", lambda: None)
+    out = bs._registries()
+    assert out["kinds"] == [] and out["validators"] == []
+    assert out["reasoning"] == {}
+    assert any("could not ask the box" in e for e in out["errors"]), out["errors"]
+
+
+def test_an_older_writer_is_named_not_silently_blank(monkeypatch):
+    """`validators` and `reasoning` landed in --describe after the other keys.
+
+    An install pinned to an earlier ms-moe-maker must say the box is too old to
+    answer, not render an empty panel - "this box has no validators" and "this
+    box cannot say" are different facts, and keeping them apart is the same
+    discipline as keeping `unmeasurable` out of `fail`.
+    """
+    from seren_theatre import backstage as bs
+    monkeypatch.setattr(bs, "_ask_the_box", lambda: {"kinds": ["hf", "local"]})
+    out = bs._registries()
+    assert out["validators"] == [] and out["reasoning"] == {}
+    joined = " ".join(out["errors"])
+    assert "validators" in joined and "reasoning" in joined, out["errors"]
+
+
+def test_the_older_bare_name_kinds_shape_still_renders(monkeypatch):
+    """Strict on what we write, lenient about what we read.
+
+    `describe` reported `kinds` as bare strings before it reported rows, and a
+    viewer meets installs on both sides of that for as long as people pin
+    versions. Refusing the old shape would mean upgrading Theatre silently
+    emptied the craft form of anyone who had not also upgraded the builder.
+    """
+    from seren_theatre import backstage as bs
+    monkeypatch.setattr(bs, "_ask_the_box",
+                        lambda: {"kinds": ["hf", "local", "stack"],
+                                 "validators": [], "reasoning": {}})
+    out = bs._registries()
+    assert [k["name"] for k in out["kinds"]] == ["hf", "local", "stack"]
