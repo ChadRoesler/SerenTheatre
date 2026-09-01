@@ -168,7 +168,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                          "and its run roots normally live)")
     ap.add_argument("rest", nargs=argparse.REMAINDER,
                     help="anything after -- is passed straight to ms-moe-maker "
-                         "(e.g. -- --dryrun --allow-refusals)")
+                         "(e.g. -- --dryrun --offline)")
     a = ap.parse_args(argv)
 
     if a.check:
@@ -234,16 +234,134 @@ if __name__ == "__main__":
 # hands back the approved path so a handler cannot check one path and write
 # another.
 #
-# And the run itself opens NOTHING. `--log-file` is passed to the child so the
-# BUILDER writes its own log into the stage, which it was always entitled to do.
-# If stagehand held that file handle, Theatre would be the process writing into
-# a stage and the invariant would be true only by a technicality about which
-# module the descriptor lived in.
+# And the run writes its own output, because `--json` already splits it for us:
+# "JSON Lines events on stdout, prose on stderr", straight from the builder's
+# own --help. So the two files Backstage wants ARE the two streams, and the
+# child's own fds are what land in them.
+#
+# This used to append `--log-file` and `--events-file` to the argv. ms-moe-maker
+# has never had either flag. argparse exited 2 in a few milliseconds, the
+# streams were DEVNULL so the message went nowhere, nothing wait()ed, and the
+# launch was reported as a success. Redirection needs no CLI surface to exist
+# and works against every version of the builder, including ones older than any
+# flag we might have added.
 
 import shlex
 from typing import Any, Dict
 
 DETACHED_MARKER = ".stagehand-run.json"
+
+# THE MARKER IS A WIRE FORMAT, because a reader in another module - and soon
+# another person's file - parses it. Same bargain as the run manifest: two
+# implementations of one format are fine, two undocumented ones are not. So the
+# keys are written down HERE rather than left to be inferred from the dict
+# literal below, and a reader can check `schema_version` before believing any
+# of it.
+#
+# WHAT IT IS FOR, precisely, because the temptation is to make it more:
+#
+#   the marker   says WHAT WAS LAUNCHED and WHETHER THE LAUNCH SUCCEEDED.
+#   the manifest says WHAT THE RUN IS DOING, and stays the only authority on it.
+#
+# `launch == "started"` therefore means "still alive shortly after spawn", NOT
+# "alive now". Making it mean the second would be the privileged status channel
+# run_detached's docstring refuses, and a reader would then have two opinions
+# about a live run - which is how a dashboard starts disagreeing with itself.
+#
+# `exit_code` is non-null exactly when the child was already gone when we
+# looked, which is the only moment this function will ever know one.
+MARKER_SCHEMA_VERSION = 1
+MARKER_KEYS = ("schema_version", "pid", "argv", "command_line", "cwd",
+               "recipe", "started", "log_file", "events_file", "launch",
+               "exit_code", "error", "log_tail")
+
+# THE THREE ANSWERS, and the middle one was learned the expensive way.
+#
+#   "started"   still alive when we looked. The normal case for a build.
+#   "finished"  already exited 0. NOT a failure - `build --plan` resolves the
+#               config, prints its stages and exits cleanly in about a third of
+#               a second. A run can legitimately be shorter than the window.
+#   "failed"    already exited non-zero. Died on arrival; nothing is running.
+LAUNCH_STARTED = "started"
+LAUNCH_FINISHED = "finished"
+LAUNCH_FAILED = "failed"
+
+# How long to wait before believing a launch. A build that dies on argv
+# parsing dies in milliseconds; a nine-hour run does not finish inside half a
+# second. So the timeout FIRING is the success case, and this can never become
+# a wait on a real run - it is bounded by construction, not by hope.
+LAUNCH_SETTLE_SECONDS = 0.4
+
+# Enough of the log to see an argparse usage message or a traceback's last
+# frames, and not so much that a marker becomes a log file.
+MARKER_LOG_TAIL_BYTES = 2048
+
+
+class BuildDiedAtLaunch(RuntimeError):
+    """The child exited before it could plausibly have begun building.
+
+    RAISING RATHER THAN RETURNING A FAILED RESULT, and the choice matters. Every
+    existing caller treats run_detached's return value as "it started" -
+    Backstage hands it straight back as a 200 with a pid in it. A new field on
+    that dict only helps a caller who looks at it, and the entire bug this
+    replaces was a caller not looking. An exception cannot be not-looked-at.
+    """
+
+    def __init__(self, exit_code: int, argv: Sequence[str],
+                 log_tail: Optional[str] = None) -> None:
+        self.exit_code = exit_code
+        self.argv = list(argv)
+        self.log_tail = log_tail
+        tail = f"\n{log_tail}" if log_tail else ""
+        super().__init__(
+            f"the build exited with code {exit_code} within "
+            f"{LAUNCH_SETTLE_SECONDS}s of launch, so nothing is running. "
+            f"The command was:\n    "
+            f"{' '.join(shlex.quote(a) for a in self.argv)}{tail}")
+
+
+def _log_tail(path: Optional[Path],
+              limit: int = MARKER_LOG_TAIL_BYTES) -> Optional[str]:
+    """The end of the log, for a failure message. Never raises.
+
+    This is the whole reason the streams stopped being DEVNULL: the child had
+    already said exactly what was wrong before it died, and we were throwing
+    the sentence away and then reporting success.
+    """
+    if path is None:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - limit))
+            return fh.read().decode("utf-8", "replace").strip() or None
+    except OSError:
+        return None
+
+
+def _write_marker(cwd: Path, payload: Dict[str, Any]) -> Optional[Path]:
+    """Drop the marker beside the run, atomically. Never raises.
+
+    ATOMIC because the reader polls a live directory. A half-written file would
+    read as damage, and a reader taught to shrug at damage is a reader that
+    shrugs at real damage.
+
+    NEVER RAISES because the marker is a courtesy to whoever is watching, not
+    part of the launch. A build that is genuinely running must not be reported
+    as failed because the directory went read-only.
+    """
+    target = Path(cwd) / DETACHED_MARKER
+    tmp = target.with_name(f"{DETACHED_MARKER}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, target)
+        return target
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return None
 
 
 def run_detached(recipe: Path, *, cwd: Path, log_file: Optional[Path] = None,
@@ -257,18 +375,27 @@ def run_detached(recipe: Path, *, cwd: Path, log_file: Optional[Path] = None,
     --detach flag, which exists because "don't let that be how a 14B rung ends"
     was written after it nearly was.
 
-    So: new session/process group, no inherited stdio, no wait(). The parent
-    forgets the child immediately and learns everything afterwards the same way
-    it learns about a run started by hand in a terminal - from the manifest and
-    the log. There is deliberately NO privileged channel for Backstage runs,
-    because a second way to know what is happening is a second opinion, and two
-    opinions is how a dashboard starts disagreeing with itself.
+    So: new session/process group, and no wait FOR THE RUN. The parent forgets
+    the child and learns everything afterwards the same way it learns about a
+    run started by hand in a terminal - from the manifest and the log. There is
+    deliberately NO privileged channel for Backstage runs, because a second way
+    to know what is happening is a second opinion, and two opinions is how a
+    dashboard starts disagreeing with itself.
+
+    THE ONE THING IT DOES WAIT FOR IS THE LAUNCH, for LAUNCH_SETTLE_SECONDS.
+    That is not a second opinion about the run - it is the difference between
+    "started" and "we typed a command". If the child is already gone by then
+    with a NON-ZERO code it never started, and this raises BuildDiedAtLaunch
+    rather than handing back a pid that belongs to nothing. Gone with code 0 is
+    a run that was simply shorter than the window, and is reported as such.
+
+    Writes DETACHED_MARKER into `cwd` either way and returns the same dict; see
+    MARKER_KEYS for the shape, which another module parses. Raises OSError if
+    the output files cannot be opened, because a build whose output goes
+    nowhere is one nobody will be able to see afterwards, and discovering that
+    silently is the disease this whole function had.
     """
     argv = list(resolve_command()) + [BUILD_VERB, str(recipe), "--json"]
-    if log_file:
-        argv += ["--log-file", str(log_file)]
-    if events_file:
-        argv += ["--events-file", str(events_file)]
     argv.extend(extra)
 
     env = dict(os.environ)
@@ -284,18 +411,95 @@ def run_detached(recipe: Path, *, cwd: Path, log_file: Optional[Path] = None,
         # does not SIGHUP a nine-hour training run.
         kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen(
-        argv, cwd=str(cwd), env=env,
-        stdin=subprocess.DEVNULL,
-        # DEVNULL, not PIPE. A pipe nobody reads fills its buffer and blocks
-        # the child forever - the classic detach bug, and it would look exactly
-        # like a training run that hung mid-stage. The child writes its own
-        # files; nothing here needs its stdout.
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        **kwargs)
+    # FILE HANDLES, NOT PIPES, AND NOT DEVNULL.
+    #
+    # The old comment here was right about pipes and wrong about the
+    # conclusion. A pipe nobody reads DOES fill its buffer and block the child
+    # forever - the classic detach bug, and it would look exactly like a
+    # training run that hung mid-stage. That is a property of PIPES. A file
+    # handle has no such buffer to fill and cannot block the writer, so
+    # redirecting to one keeps the anti-blocking property AND keeps the
+    # evidence, which DEVNULL threw away along with the argparse error that
+    # would have shown this bug on day one.
+    #
+    # `--json` already splits the two streams the way Backstage wants them:
+    # events (JSON Lines) on stdout, prose on stderr. So stdout is the .jsonl
+    # and stderr is the .log, and no flag has to exist for it.
+    #
+    # Append, never truncate: two launches that land in the same second share a
+    # filename, and losing the first one's log to the second is a bad trade for
+    # a tidier file.
+    stdout_handle = None
+    stderr_handle = None
+    try:
+        if events_file is not None:
+            stdout_handle = open(events_file, "ab", buffering=0)
+        if log_file is not None:
+            stderr_handle = open(log_file, "ab", buffering=0)
+    except OSError as exc:
+        for handle in (stdout_handle, stderr_handle):
+            if handle is not None:
+                handle.close()
+        raise OSError(
+            f"refusing to start a build whose output would go nowhere: "
+            f"{exc}") from exc
 
-    return {"pid": proc.pid, "argv": argv, "cwd": str(cwd),
-            "recipe": str(recipe), "started": time.time(),
-            "log_file": str(log_file) if log_file else None,
-            "events_file": str(events_file) if events_file else None,
-            "command_line": " ".join(shlex.quote(a) for a in argv)}
+    try:
+        proc = subprocess.Popen(
+            argv, cwd=str(cwd), env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout_handle if stdout_handle is not None
+            else subprocess.DEVNULL,
+            stderr=stderr_handle if stderr_handle is not None
+            else subprocess.DEVNULL,
+            **kwargs)
+    finally:
+        # The child holds its own dup of each descriptor from here on, and it
+        # holds them for nine hours. The parent letting go is what keeps this
+        # honest about who is writing into a stage - the builder is, the same
+        # as when a person runs it by hand.
+        for handle in (stdout_handle, stderr_handle):
+            if handle is not None:
+                handle.close()
+
+    marker: Dict[str, Any] = {
+        "schema_version": MARKER_SCHEMA_VERSION,
+        "pid": proc.pid, "argv": argv,
+        "command_line": " ".join(shlex.quote(a) for a in argv),
+        "cwd": str(cwd), "recipe": str(recipe), "started": time.time(),
+        "log_file": str(log_file) if log_file else None,
+        "events_file": str(events_file) if events_file else None,
+        "launch": LAUNCH_STARTED, "exit_code": None, "error": None,
+        "log_tail": None,
+    }
+
+    # "STARTED" HAS TO MEAN STARTED. wait() with a timeout rather than
+    # sleep-then-poll, because the timeout expiring is the answer we want and
+    # an early exit is reported the instant it happens instead of at the end of
+    # a fixed nap.
+    try:
+        code: Optional[int] = proc.wait(timeout=LAUNCH_SETTLE_SECONDS)
+    except subprocess.TimeoutExpired:
+        code = None
+
+    # ALREADY GONE IS NOT AUTOMATICALLY A FAILURE, and finding that out cost a
+    # real run. `build --plan` does its whole job - resolve the config, print
+    # the stage ladder - and exits 0 in about a third of a second. The EXIT
+    # CODE is what separates that from the bug this function exists to stop:
+    # argparse exits 2 on an unrecognised flag, and no successful build has
+    # ever exited non-zero.
+    if code == 0:
+        marker.update(launch=LAUNCH_FINISHED, exit_code=0)
+    elif code is not None:
+        tail = _log_tail(log_file)
+        marker.update(launch=LAUNCH_FAILED, exit_code=code, log_tail=tail,
+                      error=f"exited with code {code} within "
+                            f"{LAUNCH_SETTLE_SECONDS}s of launch")
+        # The marker is written for the FAILURE too - a reader needs to see
+        # that a launch was attempted and died, which is a different fact from
+        # no launch at all, and it is the fact the old code hid.
+        _write_marker(cwd, marker)
+        raise BuildDiedAtLaunch(code, argv, tail)
+
+    _write_marker(cwd, marker)
+    return dict(marker)

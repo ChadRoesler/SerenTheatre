@@ -109,6 +109,36 @@ def is_importable() -> bool:
         return False
 
 
+# HOW DEEP TO LOOK, in both directions, and why it is two constants.
+#
+# The outer depths cover where a CHECKOUT sits: repo/pkg/ or repo/repo/pkg/.
+# The inner ones cover where a MODULE sits inside the package - which is also a
+# variable, and was the second time this finder went blind. `manifest.py` moved
+# to `run/manifest.py` and the eval sidecar became `eval/record.py`; the search
+# varied the depth ABOVE the package name and not the depth INSIDE it, so both
+# contract tests found nothing and stopped comparing anything.
+#
+# Bounded rather than rglob, for the reason the old comment gives and which
+# still holds: an unbounded walk of a training repo wanders into corpora and
+# run directories holding a great many files, and a test suite that takes
+# minutes gets run less often.
+_CHECKOUT_DEPTHS = ("", "*/", "*/*/")
+_PACKAGE_DEPTHS = ("", "*/", "*/*/")
+
+
+def _shallowest(paths) -> Optional[Path]:
+    """First file, shallowest then alphabetical - so the answer is stable.
+
+    Determinism matters more than it looks: a glob's order is filesystem order,
+    and a contract test that reads a different file on a different box fails for
+    a reason nobody can reproduce.
+    """
+    for candidate in sorted(paths, key=lambda p: (len(p.parts), str(p))):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _installed(basename: str) -> Optional[Path]:
     """`basename` inside the installed package, WITHOUT importing it.
 
@@ -123,9 +153,12 @@ def _installed(basename: str) -> Optional[Path]:
     except (ImportError, ValueError):
         return None
     for location in list(getattr(spec, "submodule_search_locations", None) or []):
-        candidate = Path(location) / basename
-        if candidate.is_file():
-            return candidate
+        found = _shallowest(
+            candidate
+            for depth in _PACKAGE_DEPTHS
+            for candidate in Path(location).glob(f"{depth}{basename}"))
+        if found:
+            return found
     return None
 
 
@@ -137,13 +170,14 @@ def find(basename: str) -> Optional[Path]:
     if not WRITER_MODULE:
         return None
     for root in checkout_roots():
-        # Bounded: the package sits a level or two down (repo/repo/pkg/), and
-        # an unbounded rglob over a training repo would wander into corpora and
-        # run directories holding a great many files.
-        for depth in ("", "*/", "*/*/"):
-            for candidate in root.glob(f"{depth}{WRITER_MODULE}/{basename}"):
-                if candidate.is_file():
-                    return candidate
+        found = _shallowest(
+            candidate
+            for outer in _CHECKOUT_DEPTHS
+            for inner in _PACKAGE_DEPTHS
+            for candidate in root.glob(
+                f"{outer}{WRITER_MODULE}/{inner}{basename}"))
+        if found:
+            return found
     return None
 
 

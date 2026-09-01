@@ -53,7 +53,7 @@ def test_format_constants_match(writer, name):
 
 @needs_writer
 @pytest.mark.parametrize("name", ["PENDING", "RUNNING", "DONE", "SKIPPED",
-                                  "FAILED", "REFUSED"])
+                                  "FAILED", "REFUSED", "WARNED"])
 def test_status_vocabulary_matches(writer, name):
     assert writer.get(name) == getattr(mf, name), (
         f"status {name} differs between writer and reader; the viewer would "

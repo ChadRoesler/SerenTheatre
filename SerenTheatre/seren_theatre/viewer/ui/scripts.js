@@ -48,7 +48,15 @@ function fmtBytes(n) {
     return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
 }
 
-const KNOWN = ['pending', 'running', 'done', 'skipped', 'failed', 'refused'];
+// 'warned' joined the writer's vocabulary while the manifest contract test was
+// blind. Without it here, a status the reader understands perfectly well paints
+// as the hollow unknown marker. known_status from the server is still the gate:
+// if this list ever runs ahead of the manifest reader, that flag catches it.
+const KNOWN = ['pending', 'running', 'done', 'skipped', 'failed', 'refused',
+               'warned'];
+
+// Last path segment of a path from either kind of box.
+const base = (p) => String(p).split(/[\\/]/).pop() || String(p);
 
 // -- collapsible cards ------------------------------------------------------
 // Delegated, so it survives the innerHTML replacement on every poll. Keyed by
@@ -110,6 +118,146 @@ function renderRefusals(m) {
     </div>`;
 }
 
+// THE SMOKE TEST HAS THREE STATES AND ONLY ONE OF THEM IS A PASS.
+//
+// This line used to read `r.smoketested`, which was the existence of
+// `.smoketest.txt` - the LOG, which the writer opens BEFORE the checks that can
+// fail. So the room printed "smoke-tested" over a GGUF that flunked its
+// degenerate-output check and emits one token forever. The proof is
+// `.smokepass.txt`, written only after every check passes.
+//
+// The middle state is the one that was being rounded to success, so it is the
+// loud one here. It is called "failed or unproven" rather than "failed" because
+// disk genuinely cannot tell a failure from a run that predates the proof file
+// - both are "not proven", neither is a pass, and inventing the difference
+// would just be the old bug pointed the other way.
+function renderSmoke(r) {
+    const s = r.smoke;
+    if (!s) return '';
+    if (s.state === 'passed') {
+        return ' · <span class="smoke pass" title="A .smokepass.txt is on disk:'
+             + ' the writer only writes it after every check passes.">smoke'
+             + ' passed</span>';
+    }
+    if (s.state === 'not run') {
+        return ' · <b class="smoke none" title="Neither a smoke-test log nor a'
+             + ' pass proof is on disk.">not smoke-tested</b>';
+    }
+    return ' · <b class="smoke fail" title="A smoke-test LOG is here with no'
+         + ' .smokepass.txt beside it. Either the test ran and failed, or this'
+         + ' run predates the proof file. Read the log next to the GGUF.">smoke'
+         + ' test ran, did not pass</b>';
+}
+
+// -- the stagehand run marker ----------------------------------------------
+//
+// `.stagehand-run.json` says a build was LAUNCHED from this stage directory:
+// the command line, the recipe, the pid, when, and whether the child survived
+// being started. It says NOTHING about progress and this panel must not imply
+// it - the manifest on each rung card keeps that job, and two opinions about
+// what a run is doing is how a dashboard starts disagreeing with itself.
+//
+// It sits above the rung cards rather than inside one because the marker is a
+// property of the stage directory, and because a launch that died on arrival
+// never creates a rung at all: inside a rung card is precisely where it would
+// be invisible in the case that matters most.
+function renderLaunch(s) {
+    if (s.launch_error) {
+        return `<div class="card launch"><h3>${escapeHtml(s.name)} · stagehand
+            <span class="badge failed">marker unreadable</span></h3>
+            <div class="card-body"><div class="err">A stagehand run marker is
+            present in this directory but could not be read:
+            ${escapeHtml(s.launch_error)}. Everything below is from the
+            manifests and the disk and is unaffected.</div></div></div>`;
+    }
+    const L = s.launch;
+    if (!L) return '';
+
+    const died = L.launched === false;
+    // 'finished' IS NOT 'started' AND MUST NOT BE PAINTED AS A LIVE RUN. The
+    // child was already gone when stagehand looked, having exited 0 inside the
+    // liveness window - `ms-moe-maker build --plan` resolves the config, prints
+    // its stages and is done in about a third of a second. That is a success
+    // and a common one, but showing it as "launched" would leave somebody
+    // watching for progress from a pid that ended before the page loaded.
+    const finished = String(L.launch_state).toLowerCase() === 'finished';
+    const badge = died
+        ? '<span class="badge failed">launch failed</span>'
+        : (finished
+            ? '<span class="badge finished">ran and finished</span>'
+            : (L.launched === true
+                ? '<span class="badge idle">launched</span>'
+                : `<span class="badge unknown">${escapeHtml(
+                    L.launch_state || 'outcome not recorded')}</span>`));
+
+    // A launch that died on arrival leaves nothing else behind - no rung, no
+    // manifest, often not even a log - so this is the one thing on the page
+    // that gets to shout. The tail is the child's dying words, and it is the
+    // reason the panel is worth having rather than just a badge.
+    const dead = died
+        ? `<div class="err"><b>This build did not survive being started.</b>
+           ${escapeHtml(L.launch_detail
+               || 'The marker records the launch failing.')}${
+           L.exit_code != null
+               ? ` (exit code ${escapeHtml(String(L.exit_code))})` : ''}</div>`
+          + (L.log_tail ? `<pre class="tail">${escapeHtml(L.log_tail)}</pre>` : '')
+        : '';
+
+    // LAST ACTIVITY IS A MTIME, NOT A HEARTBEAT, and it is never rendered as
+    // "dead". A healthy run is silent for whole minutes - a 25-minute weight
+    // load writes nothing at all - so this says when the file last grew and
+    // stops there. A nine-hour run that stopped writing four hours ago is the
+    // thing a person most needs to see; the conclusion is theirs to draw.
+    const acts = (L.files || []).map((f) => f.exists
+        ? `${f.role} last wrote ${fmtAge(f.mtime)} · ${fmtBytes(f.size)}`
+        : `${f.role} file never appeared`).join(' · ');
+
+    const rows = [
+        L.started ? `launched ${fmtAge(L.started)}` : null,
+        L.pid != null ? `pid ${L.pid}` : null,
+        L.recipe ? `recipe ${base(L.recipe)}` : null,
+    ].filter(Boolean).map(escapeHtml).join(' · ');
+
+    // An exit code is recorded whenever the child was already gone - which
+    // includes the good case, where it is 0. So it gets said in words here
+    // rather than left to look like the failure block's twin.
+    const ended = finished
+        ? `<div class="launch-row">The child had already exited${
+            L.exit_code != null
+                ? ` with code ${escapeHtml(String(L.exit_code))}` : ''
+          } when stagehand looked — a run legitimately shorter than the
+          liveness window, which <code>--plan</code> and anything else that
+          does its whole job fast will be. Not a failure, and not still
+          running.</div>`
+        : '';
+
+    // Say which schema we met rather than pretending to have read all of it.
+    const schema = (L.schema_version != null
+                    && L.schema_version !== L.understands_schema)
+        ? `<div class="launch-row hint">This marker is schema
+           ${escapeHtml(String(L.schema_version))}; this viewer reads schema
+           ${escapeHtml(String(L.understands_schema))}. Anything the two do not
+           share is simply absent above.</div>` : '';
+    // Absent is not the same as fine. Saying so is the entire house style.
+    const unsure = (L.launched === null)
+        ? `<div class="launch-row hint">This marker does not record whether the
+           launch survived — which is not the same as recording that it
+           did.</div>` : '';
+
+    // Named for the STAGE it belongs to. When rungs exist this panel sits above
+    // cards titled by rung, and an unlabelled "stagehand" heading in that stack
+    // does not say which directory it is a reading of.
+    return `<div class="card launch"><h3>${escapeHtml(s.name)} · stagehand${badge}</h3>
+        ${L.command_line
+            ? `<div class="sub"><code>${escapeHtml(L.command_line)}</code></div>`
+            : ''}
+        <div class="card-body">${dead}
+            ${rows ? `<div class="launch-row">${rows}</div>` : ''}${ended}
+            ${acts ? `<div class="launch-row">${escapeHtml(acts)}</div>` : ''}
+            ${unsure}${schema}
+        </div></div>`;
+}
+
 function renderRung(r) {
     const m = r.manifest;
     if (m) {
@@ -143,9 +291,10 @@ function renderRung(r) {
     if (r.skeleton) bits.push('skeleton stitched');
     if (r.final) bits.push('router trained');
     if (r.gguf) {
-        bits.push(`GGUF ${escapeHtml(r.gguf.name)} (${r.gguf.gb} GB)` +
-            // Converted is not proven. The pipeline learned this the hard way.
-            (r.smoketested ? ' · smoke-tested' : ' · <b>not smoke-tested</b>'));
+        // Converted is not proven, and neither is tested. See renderSmoke: the
+        // old ternary here read a LOG that exists for failed smoke tests too.
+        bits.push(`GGUF ${escapeHtml(r.gguf.name)} (${r.gguf.gb} GB)`
+            + renderSmoke(r));
     }
     const err = r.manifest_error
         ? `<div class="err">A manifest is present but could not be read:
@@ -176,13 +325,18 @@ function renderStages(state) {
                 <div class="card-body"><div class="err">Directory not found:
                 <code>${escapeHtml(s.path)}</code></div></div></div>`;
         }
+        // The launch panel goes ABOVE the rung cards, and it is rendered
+        // even when there are no rungs - that is exactly the shape a build
+        // that died on arrival leaves behind, and "No runs here yet" on its
+        // own is a true sentence that tells you nothing about why.
+        const launch = renderLaunch(s);
         if (!s.rungs.length) {
-            return `<div class="card"><h3>${escapeHtml(s.name)}</h3>
+            return launch + `<div class="card"><h3>${escapeHtml(s.name)}</h3>
                 <div class="sub"><code>${escapeHtml(s.path)}</code></div>
                 <div class="card-body"><div class="empty">No runs here yet.</div>
                 </div></div>`;
         }
-        return s.rungs.map(renderRung).join('');
+        return launch + s.rungs.map(renderRung).join('');
     }).join('');
 }
 

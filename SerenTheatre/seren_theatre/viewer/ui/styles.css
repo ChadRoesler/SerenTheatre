@@ -154,6 +154,16 @@ body { font-size: 14px; }
 .step.skipped .label { color: var(--muted); }
 .step.failed  .dot { background: var(--danger); }
 .step.refused .dot { background: var(--warn); }
+/* WARNED IS IN THE REFUSED FAMILY, NOT THE DONE FAMILY. The writer's own words
+   for it: "completed without the full result the stage exists for" - no
+   llama.cpp on the box, so export ran and converted nothing. So: green core
+   because something genuinely ran, amber ring because it did not deliver, and
+   sitting visually beside .refused (solid amber, a thing that never happened)
+   rather than beside .done. This is also why it stays OUT of the manifest
+   reader's COMPLETE tuple: done_count answers "how many stages produced their
+   artifact", and counting a warned stage would make that number mean two
+   different things depending on which status got you there. */
+.step.warned  .dot { background: var(--ok); box-shadow: 0 0 0 2px var(--warn); }
 .step.pending .label { color: var(--faint); }
 .step.running .dot { background: var(--run); animation: pulse 1.6s ease-in-out infinite; }
 .step.running .label { color: #fff; font-weight: 600; }
@@ -176,6 +186,9 @@ body { font-size: 14px; }
 .badge.finished { color: var(--ok); border-color: #2c5537; }
 .badge.failed   { color: var(--danger); border-color: #6d2b38; }
 .badge.stalled  { color: var(--warn); border-color: #5c4a1e; }
+.badge.warned   { color: var(--warn); border-color: #5c4a1e; }
+/* A word from the writer this viewer does not recognise, shown AS ITSELF. */
+.badge.unknown  { color: var(--warn); border-color: #5c4a1e; }
 .badge.idle,
 .badge.disk     { color: var(--faint); }
 
@@ -203,6 +216,32 @@ body { font-size: 14px; }
 .mile { color: var(--ok); font-size: 12px; margin-top: 8px; }
 
 code { color: var(--muted); font-size: 12px; }
+
+/* -- the smoke test: three states, one of them a pass -------------------- */
+/* `.smoketest.txt` is the LOG and is present for a test that FAILED;
+   `.smokepass.txt` is the proof. The middle state used to be painted as the
+   first one, so it gets the danger colour and "not run" stays merely muted -
+   a test nobody ran is not the same kind of news as one that did not pass. */
+.smoke.pass { color: var(--ok); }
+.smoke.fail { color: var(--danger); }
+.smoke.none { color: var(--muted); }
+
+/* -- the stagehand run marker -------------------------------------------- */
+/* Quieter than a rung card and dashed, because it is a record of what somebody
+   LAUNCHED rather than a reading of what a run is doing. The one time it is
+   allowed to shout is a launch that died - and that is the case where there is
+   no rung card to look at instead. */
+.card.launch { background: var(--bg-2); border-style: dashed; }
+.card.launch > h3 { color: var(--faint); }
+.launch-row { color: var(--muted); font-size: 12px; }
+.launch-row + .launch-row { margin-top: 4px; }
+.launch .tail {
+    margin: 0 0 12px; padding: 10px 12px; max-height: 220px; overflow: auto;
+    white-space: pre-wrap; word-break: break-word;
+    background: var(--bg); border: 1px solid #6d2b38; border-radius: 8px;
+    color: var(--muted);
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 
 /* -- backstage ----------------------------------------------------------- */
 #bs-text {

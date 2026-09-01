@@ -20,6 +20,7 @@ import ast
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field, asdict
 from fnmatch import fnmatch
 
@@ -269,6 +270,273 @@ _STAGES = (
     ("final", "fraunkenstein_agent_final", "config.json"),
 )
 
+# ── the smoke test: the LOG and the PROOF are different files ───────────────
+#
+# THE LIE THIS REPLACED. `.smoketest.txt` is the LOG, and the writer opens it
+# BEFORE running the checks that can fail. So it is sitting there for a GGUF
+# whose llama-cli exited non-zero, and for one that failed the degenerate-run
+# check and emits the same token forever. Reading the log as proof is how this
+# viewer spent a while printing "smoke-tested" over a model that failed its
+# smoke test - the single worst way for a dashboard to be wrong, because it is
+# wrong in the reassuring direction.
+#
+# `.smokepass.txt` is the PROOF. The writer only writes it after every check
+# passes: exit code asserted, output judged on stdout alone, degenerate run
+# clean. That is the file that means the smoke test passed, and it is the only
+# file this module will call a pass.
+SMOKE_LOG_SUFFIX = ".smoketest.txt"
+SMOKE_PROOF_SUFFIX = ".smokepass.txt"
+
+# The three states, named so that the middle one cannot be mistaken for either
+# of its neighbours. See _smoke_reading for why it is spelled this way.
+SMOKE_PASSED = "passed"
+SMOKE_UNPROVEN = "failed or unproven"
+SMOKE_NOT_RUN = "not run"
+
+
+def _smoke_reading(gguf: Path) -> Dict[str, Any]:
+    """Which of the three smoke states this GGUF is in. Presence, not promises.
+
+    THE MIDDLE STATE IS NOT A BOOLEAN, and that is the whole point of this
+    function existing instead of a one-liner. A log with no proof beside it is
+    one of two things and disk cannot tell them apart: the test RAN AND FAILED,
+    or the run predates the proof file existing at all. Both of those are "not
+    proven to have passed" and neither of them is "passed".
+
+    So they share one honestly-named state. Calling it `failed` would invent a
+    verdict about every older run on the box; calling it `passed` is the bug
+    this replaced. "failed or unproven" is the true sentence, it is the state a
+    person most needs to see, and it is deliberately the loud one in the viewer
+    - a smoke test that ran and left no proof is exactly the thing you want to
+    go read the log about.
+    """
+    log = Path(str(gguf) + SMOKE_LOG_SUFFIX)
+    proof = Path(str(gguf) + SMOKE_PROOF_SUFFIX)
+    has_log, has_proof = log.is_file(), proof.is_file()
+    if has_proof:
+        state = SMOKE_PASSED
+    elif has_log:
+        state = SMOKE_UNPROVEN
+    else:
+        state = SMOKE_NOT_RUN
+    return {"state": state,
+            "proof": proof.name if has_proof else None,
+            "log": log.name if has_log else None}
+
+
+# ── the stagehand run marker ────────────────────────────────────────────────
+#
+# `.stagehand-run.json` is dropped by stagehand.run_detached into the CWD a
+# build was launched in - the stage directory, beside the log and events files,
+# NOT inside a rung. Stagehand does not know the rung layout and is not going to
+# learn it, so this is read at stage level, which is also where it is most
+# useful: a launch that died on arrival never creates a rung at all, so the rung
+# cards are exactly the place it would be invisible.
+#
+# NAMED HERE, NOT IMPORTED FROM stagehand. sources.py is on the viewer's import
+# graph and stagehand deliberately is not - tests/test_stagehand.py's
+# test_the_viewer_never_imports_stagehand pins that, because the room has to
+# stay installable on a box with no build tooling at all. So this takes the same
+# bargain manifest.py takes with msmoe-run.json: the reader spells the name out
+# itself, and a test asserts the two constants still agree.
+DETACHED_MARKER = ".stagehand-run.json"
+
+# The schema this reader was written against. Reported rather than enforced: a
+# newer marker is still read for the keys it does share, and the viewer says
+# which version it met. Refusing to read one would turn a writer upgrade into a
+# blank panel.
+MARKER_SCHEMA_VERSION = 1
+
+# WHAT A LAUNCH OUTCOME LOOKS LIKE. The writer owns this vocabulary and this
+# reader does not get a vote, so: recognised words map to a verdict, an
+# unrecognised one maps to None and is reported AS ITSELF. Same rule the viewer
+# already follows for an unknown manifest status, and it is here for the same
+# reason - bucketing something you do not recognise into a state you do is
+# inventing a reading.
+#
+# THREE WORDS, NOT TWO, AND THE MIDDLE ONE IS THE INTERESTING ONE.
+#
+#   started   still alive when stagehand looked. The normal shape of a build.
+#   finished  ALREADY EXITED 0, inside stagehand's liveness window. This is a
+#             success. `ms-moe-maker build r.yaml --json --plan` resolves the
+#             config, prints its stages and is done in about a third of a
+#             second - legitimately shorter than the window it is checked in.
+#             "Already gone" is not "died"; the EXIT CODE is the discriminator,
+#             and no successful build exits non-zero.
+#   failed    already exited non-zero. Nothing is running, and `exit_code`,
+#             `error` and `log_tail` are populated.
+#
+# `finished` maps to launched=True because it DID launch - it just also already
+# ended. The word itself is kept in `launch_state` so the room can say "ran and
+# finished immediately" instead of painting a live-looking panel over a pid that
+# was gone before the page loaded.
+_LAUNCH_WORDS = {
+    "started": True,
+    "finished": True,
+    "failed": False,
+    # Spellings from a writer that is not this one. Tolerated, not expected -
+    # train strict, infer lenient.
+    "running": True, "ok": True, "success": True, "alive": True,
+    "error": False, "died": False, "dead": False,
+}
+
+
+def _launch_verdict(payload: Dict[str, Any]) -> tuple:
+    """(launched, raw_state, detail). launched is True / False / None.
+
+    None means THE MARKER DOES NOT SAY - an older writer, or a word this reader
+    has not met. It is not a synonym for fine. An absent verdict rendered as
+    success is the identical bug to a smoke log rendered as a pass, and this
+    module just finished fixing that one twenty lines up.
+    """
+    raw = payload.get("launch")
+    if isinstance(raw, bool):           # a writer that spelled it as a flag
+        return raw, ("started" if raw else "failed"), None
+    if isinstance(raw, str) and raw.strip():
+        word = raw.strip()
+        verdict = _LAUNCH_WORDS.get(word.lower())
+        # .get, so an unrecognised word lands on None and is handed back intact
+        # for the room to render as itself.
+        return verdict, word, None
+    for key in ("launched", "ok", "alive"):
+        if isinstance(payload.get(key), bool):
+            value = payload[key]
+            return value, ("started" if value else "failed"), None
+    # No verdict field at all. A one-line reason is still a verdict of sorts -
+    # nobody writes an error string about a launch that went fine.
+    for key in ("error", "launch_error", "detail", "reason"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return False, "failed", value.strip()
+    code = payload.get("exit_code")
+    # ONLY REACHED BY A MARKER WITH NO VERDICT WORD AT ALL - an older writer, or
+    # one that is not stagehand. An exit code here means the same thing it means
+    # everywhere else in this file: the child WAS ALREADY GONE when somebody
+    # looked. Nonzero is unambiguously a dead launch. Zero is not: it could be a
+    # `--plan` that did its whole job in a third of a second, or a marker some
+    # future writer updated hours later when the build finished. So the loud
+    # case stays loud and the ambiguous one stays None - which means "this
+    # marker does not say", and never means "fine".
+    if isinstance(code, int) and not isinstance(code, bool) and code != 0:
+        return False, "failed", f"the child exited with code {code}"
+    return None, None, None
+
+
+def _file_activity(path: str, role: str) -> Dict[str, Any]:
+    """stat() one of the files the launch named. A read, and only a read."""
+    try:
+        st = Path(path).stat()
+    except OSError:
+        # Absent is a real reading, and a common one: a build that died on
+        # arrival never opened either file. Reported, not hidden.
+        return {"role": role, "path": path, "exists": False,
+                "mtime": None, "size": None, "since": None}
+    return {"role": role, "path": path, "exists": True,
+            "mtime": st.st_mtime, "size": st.st_size,
+            "since": max(0.0, time.time() - st.st_mtime)}
+
+
+def read_launch(directory: Path) -> tuple:
+    """The `.stagehand-run.json` a detached launch left in `directory`.
+
+    Returns (reading, error) and NEVER raises - the same three outcomes, and
+    the same lenient discipline, as manifest.read:
+
+      * absent     -> (None, None). Nobody launched from here. Normal.
+      * unreadable -> (None, "why"). Reported, never swallowed: a file we
+                      cannot interpret is a real problem, and scraping quietly
+                      past it hides that behind a display that looks fine.
+      * readable   -> (dict, None).
+
+    WHAT THIS IS AND, MORE IMPORTANTLY, WHAT IT IS NOT. The marker says what was
+    LAUNCHED: a command line, a recipe, a pid, a moment, and whether the child
+    survived being started. THE MANIFEST REMAINS AUTHORITATIVE for what the run
+    is doing. Nothing here feeds `source`, a stage status or a progress number,
+    because stagehand's own docstring is blunt about why it opens no privileged
+    channel back: a second way to know what is happening is a second opinion,
+    and two opinions is how a dashboard starts disagreeing with itself.
+
+    LAST ACTIVITY IS A MTIME, NOT A HEARTBEAT. `since_activity` is how long ago
+    a file last grew, and that is ALL it is. A perfectly healthy run is silent
+    for whole minutes - a 25-minute weight load writes nothing - so this reports
+    the reading and refuses to draw the conclusion. "No output for four hours"
+    is a fact somebody can act on. "Dead" is not something a stat() can tell
+    you, and guessing it is how a dashboard earns a reputation for crying wolf.
+    """
+    marker = directory / DETACHED_MARKER
+    try:
+        raw = marker.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        return None, f"{DETACHED_MARKER} could not be read: {exc}"
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        return None, f"{DETACHED_MARKER} is not readable JSON: {exc}"
+    if not isinstance(payload, dict):
+        return None, (f"{DETACHED_MARKER} holds a {type(payload).__name__}, "
+                      f"not an object; this reader cannot honestly interpret "
+                      f"it")
+
+    launched, launch_state, detail = _launch_verdict(payload)
+    if detail is None:
+        for key in ("error", "launch_error", "detail"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                detail = value.strip()
+                break
+
+    files: List[Dict[str, Any]] = []
+    for role, key in (("log", "log_file"), ("events", "events_file")):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            files.append(_file_activity(value, role))
+    stamps = [f["mtime"] for f in files if f["mtime"] is not None]
+    last = max(stamps) if stamps else None
+
+    argv = payload.get("argv")
+    command_line = payload.get("command_line")
+    if not isinstance(command_line, str) or not command_line:
+        command_line = (" ".join(str(a) for a in argv)
+                        if isinstance(argv, list) and argv else None)
+
+    exit_code = payload.get("exit_code")
+    tail = payload.get("log_tail")
+    return {
+        "marker": DETACHED_MARKER,
+        "path": str(marker),
+        # Reported, not enforced. A newer marker is still read for the keys it
+        # shares; the viewer says which version it met so a reader knows how
+        # much of the panel to trust.
+        "schema_version": payload.get("schema_version"),
+        "understands_schema": MARKER_SCHEMA_VERSION,
+        "launched": launched,
+        # The writer's own word, kept verbatim so an unrecognised one can be
+        # rendered as itself rather than bucketed into a state we do know.
+        "launch_state": launch_state,
+        "launch_detail": detail,
+        # NOT FAILURE-ONLY. An exit code is recorded whenever the child was
+        # already gone when stagehand looked, which includes the `finished`
+        # case where it is 0 and is good news. The room reads it alongside
+        # `launch_state` rather than treating its presence as a verdict.
+        "exit_code": exit_code if isinstance(exit_code, int) else None,
+        # The child's dying words, when the writer captured them. Failure-only,
+        # and the single most useful thing on a failed launch - it is why this
+        # panel is worth having rather than just a badge.
+        "log_tail": tail if isinstance(tail, str) else None,
+        "pid": payload.get("pid"),
+        "recipe": payload.get("recipe"),
+        "cwd": payload.get("cwd"),
+        "started": payload.get("started"),
+        "command_line": command_line,
+        "files": files,
+        "last_activity": last,
+        "since_activity": (max(0.0, time.time() - last)
+                           if last is not None else None),
+    }, None
+
+
 
 def looks_like_rung(root: Path) -> bool:
     """Is this directory a RUN, or just something the glob happened to catch?
@@ -323,6 +591,7 @@ def scan_rung(root: Path) -> Dict[str, Any]:
     out: Dict[str, Any] = {"name": root.name, "path": str(root),
                            "specialists": [], "skeleton": False,
                            "final": False, "gguf": None, "smoketested": False,
+                           "smoke": None,
                            "source": "disk", "manifest": None,
                            "manifest_error": None}
 
@@ -360,10 +629,17 @@ def scan_rung(root: Path) -> Dict[str, Any]:
             out["final"] = True
         elif n.endswith(".gguf"):
             out["gguf"] = {"name": n, "gb": round(entry.stat().st_size / 1e9, 2)}
-            # CONVERTED IS NOT PROVEN. The pipeline learned this the hard way:
-            # a GGUF that converted and then hung its smoke test would be
-            # treated as finished forever. Presence of the log is the proof.
-            out["smoketested"] = Path(str(entry) + ".smoketest.txt").is_file()
+            # CONVERTED IS NOT PROVEN, and neither is TESTED. This line used to
+            # read `.smoketest.txt` - the LOG, which the writer opens before the
+            # checks that can fail - so a GGUF that flunked its degenerate-run
+            # check was reported here as smoke-tested. The PROOF is
+            # `.smokepass.txt`, and the three genuinely different states are
+            # kept apart in `smoke`; see _smoke_reading.
+            out["smoke"] = _smoke_reading(entry)
+            # Kept, and now it means what its name always claimed: the smoke
+            # test is PROVEN to have passed. Consumers of /api/state that only
+            # want a boolean get the honest one.
+            out["smoketested"] = out["smoke"]["state"] == SMOKE_PASSED
     out["specialists"].sort()
     return out
 
@@ -386,5 +662,15 @@ def scan_stage(name: str, root: Path, log_globs: List[str],
                 if p.is_dir() and looks_like_rung(p):
                     rungs.append(scan_rung(p))
     logs.sort(key=lambda r: r.mtime, reverse=True)
+    # WHAT WAS LAUNCHED FROM HERE, if anything. At STAGE level because that is
+    # where stagehand drops the marker - beside the log and events files, in the
+    # cwd it was handed - and because a launch that died on arrival produces no
+    # rung directory at all, so a rung-level seat would be empty in exactly the
+    # case that matters most. Same lenient read as the manifest: a missing,
+    # unreadable or ancient marker degrades to a reported error and nothing else
+    # on this dict changes. It is a record of a START and never a second opinion
+    # about progress; the manifest keeps that job.
+    launch, launch_error = read_launch(root)
     return {"name": name, "path": str(root), "exists": root.is_dir(),
-            "logs": [asdict(r) for r in logs], "rungs": rungs}
+            "logs": [asdict(r) for r in logs], "rungs": rungs,
+            "launch": launch, "launch_error": launch_error}
