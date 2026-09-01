@@ -21,7 +21,12 @@ import pytest
 import _writerfinder as wf
 from seren_theatre import evalrecord as ev
 
-SIDECAR_MODULE = "evalrecord.py"
+# The BASENAME only, never the subpackage path. The writer moved this from
+# `evalrecord.py` to `eval/record.py` - moved AND renamed - and the finder now
+# varies the depth inside the package, so a bare name still lands. Spelling the
+# subpackage here would work today and go blind on the next reorganisation,
+# which is the exact failure this file exists to catch.
+SIDECAR_MODULE = "record.py"
 source = wf.find(SIDECAR_MODULE)
 
 needs_writer = pytest.mark.skipif(

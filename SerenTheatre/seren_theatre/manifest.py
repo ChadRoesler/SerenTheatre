@@ -49,8 +49,18 @@ DONE = "done"
 SKIPPED = "skipped"
 FAILED = "failed"
 REFUSED = "refused"
+# Terminal, and NOT a success: the stage finished without the result it exists
+# to produce - no llama.cpp, so export "converted nothing". The writer added it
+# while the contract test above was blind, which is the whole argument for that
+# test; a viewer that did not know the word would have painted a real outcome
+# as an unrecognised one.
+#
+# Deliberately NOT added to COMPLETE. That tuple feeds done_count, and whether
+# a warned stage counts toward progress is a rendering decision belonging to
+# whoever owns the viewer - naming the status is what the wire format requires.
+WARNED = "warned"
 
-STATUSES = (PENDING, RUNNING, DONE, SKIPPED, FAILED, REFUSED)
+STATUSES = (PENDING, RUNNING, DONE, SKIPPED, FAILED, REFUSED, WARNED)
 COMPLETE = (DONE, SKIPPED)
 
 

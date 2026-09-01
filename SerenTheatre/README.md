@@ -170,7 +170,7 @@ nothing and that's the bargain.
 
 ```bash
 seren-theatre-stagehand --check          # is it usable? which command will run?
-seren-theatre-stagehand r.yaml -- --dryrun --allow-refusals
+seren-theatre-stagehand r.yaml -- --dryrun --offline
 ```
 
 `--check` reports `is_documented_command`. If `ms-moe-maker` isn't on PATH, stagehand

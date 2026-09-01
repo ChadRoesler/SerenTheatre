@@ -77,7 +77,13 @@ class RecipeBody(BaseModel):
 class RunBody(BaseModel):
     name: str
     dryrun: bool = True
-    allow_refusals: bool = False
+    # NO allow_refusals. It used to append `--allow-refusals`, which
+    # ms-moe-maker has never had - the same bug as `--log-file`, from the same
+    # habit of writing down the flag we wished for. argparse exits 2 on an
+    # unknown flag, so ticking that box did not relax anything; it killed the
+    # build. Refusals are reported by the builder either way (see levers.py);
+    # there is nothing here to opt into.
+
     # Which stage to build in. Named rather than free-form: the run has to
     # happen somewhere the pipeline lives, and letting a POST choose an
     # arbitrary cwd is a remote-execution primitive with extra steps.
@@ -322,13 +328,13 @@ def router() -> APIRouter:
         extra: List[str] = []
         if body.dryrun:
             extra.append("--dryrun")
-        if body.allow_refusals:
-            extra.append("--allow-refusals")
 
         try:
-            # The log lands IN the stage, which is how Theatre can see it - and
-            # THE CHILD OPENS IT. Paths in, no file handles here. See the note
-            # at the top of stagehand's backstage section.
+            # The log lands IN the stage, which is how Theatre can see it: the
+            # child's own stdout and stderr are redirected into these two
+            # files, so the BUILDER is the process writing there, the same as
+            # when a person runs it by hand. See the note at the top of
+            # stagehand's backstage section.
             started = stagehand.run_detached(
                 path, cwd=cwd,
                 log_file=cwd / f"msmoe-{tag}-{stamp}.log",
@@ -336,6 +342,12 @@ def router() -> APIRouter:
                 extra=extra)
         except stagehand.StagehandUnavailable as exc:
             raise HTTPException(503, str(exc)) from exc
+        except stagehand.BuildDiedAtLaunch as exc:
+            # 500, not 200-with-a-sad-field. The whole failure this replaces was
+            # a dead build reported as a live one, so the status code has to
+            # disagree too - a caller that only reads the code must not come
+            # away thinking a run is in progress.
+            raise HTTPException(500, str(exc)) from exc
         except OSError as exc:
             raise HTTPException(500, f"could not start the build: {exc}") from exc
 
