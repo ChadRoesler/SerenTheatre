@@ -17,6 +17,9 @@ exists to avoid, and the test would then pass for the wrong reason.
 """
 from __future__ import annotations
 
+import ast
+import dataclasses
+
 import pytest
 
 import _writerfinder as wf
@@ -83,6 +86,76 @@ def test_no_status_exists_that_the_viewer_cannot_name(writer):
         f"{wf.WRITER_DIST} can emit {sorted(missing)} and seren-theatre does "
         f"not know those statuses. They would render as 'unknown' - which is "
         f"honest, but this is the moment to teach the viewer instead.")
+
+
+# ── the PAYLOAD, not just the constants ───────────────────────────
+#
+# A contract test that covers the constants and not the document is half a
+# contract, and the missing half is the one that broke. `build_id`, `resolved`
+# and `defaults_files` were stamped by the writer for three releases and
+# dropped by this reader for three releases, while every assertion above stayed
+# green - because every assertion above is about NAMES, and nothing compared
+# the FIELDS.
+#
+# Read from the writer's dataclass by `ast`, never by importing it: importing
+# would create the dependency the whole two-implementations arrangement exists
+# to avoid, and the test would then pass for the wrong reason.
+
+def _writer_manifest_fields() -> set:
+    """Field names on the writer's Manifest dataclass, read out of source."""
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "Manifest":
+            return {n.target.id for n in node.body
+                    if isinstance(n, ast.AnnAssign)
+                    and isinstance(n.target, ast.Name)}
+    return set()
+
+
+@needs_writer
+def test_every_field_the_writer_stamps_is_a_field_this_reader_keeps():
+    theirs = _writer_manifest_fields()
+    # THE EMPTY SET IS NOT AGREEMENT - the same trap the STATUSES check above
+    # spent its whole life in. Nothing minus anything is nothing.
+    assert theirs, (
+        f"could not read the Manifest dataclass out of {source}, so the "
+        f"comparison below would be vacuous. The writer has probably changed "
+        f"how it declares its fields; teach this, do not leave it green.")
+    ours = {f.name for f in dataclasses.fields(mf.Manifest)}
+    missing = theirs - ours
+    assert not missing, (
+        f"{wf.WRITER_DIST} stamps {sorted(missing)} into every manifest and "
+        f"seren-theatre parses straight past them. That is not a rendering "
+        f"gap - the data never reaches the viewer at all, and nothing says so.")
+
+
+@needs_writer
+def test_every_field_the_writer_stamps_reaches_api_state():
+    """Carried is not the same as served. A field parsed into the dataclass and
+    left out of as_dict is invisible to the room and to anything scripting
+    /api/state, which is the same silence one layer further on."""
+    theirs = _writer_manifest_fields()
+    assert theirs
+    served = mf.as_dict(mf.Manifest())
+    missing = {name for name in theirs if name not in served}
+    assert not missing, (
+        f"{sorted(missing)} is read from the manifest and then dropped by "
+        f"as_dict, so /api/state never carries it.")
+
+
+@needs_writer
+def test_the_reader_has_somewhere_to_put_a_field_nobody_has_written_yet():
+    """The structural half. Three fields have now been added by the writer and
+    silently discarded here, each found and fixed one at a time; a catch-all
+    closes the class of bug rather than its latest instance."""
+    assert "extra" in {f.name for f in dataclasses.fields(mf.Manifest)}, (
+        "the reader has no catch-all, so the next field the writer adds is "
+        "dropped in silence exactly like the last three were.")
+    known = set(mf.KNOWN_KEYS)
+    theirs = _writer_manifest_fields() - {"extra"}
+    assert theirs <= known, (
+        f"{sorted(theirs - known)} would land in `extra` rather than in its "
+        f"own field - carried, but unrendered and unnamed.")
 
 
 # ── the guards on the guard ─────────────────────────────────────────────────

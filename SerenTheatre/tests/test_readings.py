@@ -418,3 +418,195 @@ def test_the_viewer_pack_stopped_reading_the_log_as_a_pass():
     assert "r.smoketested ? ' · smoke-tested'" not in js, (
         "the old boolean ternary is back: a smoke LOG is being rendered as a "
         "pass again")
+
+
+# ── ② staleness: the readings, not the conclusion ──────────────────
+#
+# The manifest is written on STAGE TRANSITIONS and a fine-tune stage runs about
+# 58 minutes, so a fifteen-minute threshold on `updated` fired on every healthy
+# fine-tune - in red, claiming the process "was probably killed", eight times
+# an evening on an 8-expert gauntlet. The log and events files were being
+# written continuously the whole time and nothing read them.
+
+def _activity(**ago):
+    """_file_activity-shaped readings. `ago` seconds since; None = absent."""
+    now = time.time()
+    return [{"role": role, "path": "/lab/" + role,
+             "exists": since is not None,
+             "mtime": (now - since) if since is not None else None,
+             "size": 1, "since": since}
+            for role, since in ago.items()]
+
+
+def test_a_long_stage_is_not_stalled_while_the_log_is_writing():
+    """THE FALSE ALARM, pinned. 46 minutes of manifest silence and a log that
+    wrote three seconds ago is a fine-tune, not a corpse."""
+    q = sources.quiet_reading(time.time() - 46 * 60, _activity(log=3, events=3))
+    assert q["manifest_quiet_for"] > q["after_seconds"]
+    assert q["recent_write"] is True
+    assert sources.activity_state("stalled", q) == "running"
+
+
+def test_silence_everywhere_leaves_the_manifest_word_standing():
+    q = sources.quiet_reading(time.time() - 4 * 3600, _activity(log=4 * 3600))
+    assert q["recent_write"] is False
+    assert sources.activity_state("stalled", q) == "stalled"
+
+
+def test_no_evidence_at_all_never_downgrades_stalled():
+    """An empty set is not agreement. "There is no log to read" must never
+    render as "still going" - the word is only withdrawn when a file was
+    positively seen to have been written."""
+    q = sources.quiet_reading(time.time() - 4 * 3600, [])
+    assert sources.activity_state("stalled", q) == "stalled"
+    assert sources.activity_state("stalled", None) == "stalled"
+
+
+def test_a_file_that_never_appeared_is_not_a_write():
+    q = sources.quiet_reading(time.time() - 46 * 60, _activity(events=None))
+    assert q["files"][0]["exists"] is False
+    assert q["files"][0]["quiet_for"] is None
+    assert q["recent_write"] is False
+
+
+@pytest.mark.parametrize("state", ["running", "finished", "failed", "idle"])
+def test_only_stalled_is_ever_revisited(state):
+    """The log gets a vote on one word and no others. A finished run is
+    finished however busy the directory looks."""
+    q = sources.quiet_reading(time.time() - 4 * 3600, _activity(log=1))
+    assert sources.activity_state(state, q) == state
+
+
+def test_the_quiet_reading_claims_neither_alive_nor_dead():
+    """The same line test_nothing_in_the_launch_reading... holds one panel
+    over. A stat() cannot tell you a process died, so no key here is named for
+    that conclusion; the numbers are printed and the reader concludes."""
+    q = sources.quiet_reading(time.time(), _activity(log=1))
+    for forbidden in ("alive", "dead", "killed", "stalled", "state", "status",
+                      "running", "finished"):
+        assert forbidden not in q
+
+
+def test_the_evidence_is_the_marker_files_plus_the_newest_log(tmp_path):
+    """activity_files reuses read_launch's machinery rather than a second copy,
+    and adds the newest glob log because a HAND-RUN build drops no marker - and
+    the hand-run path is the documented one."""
+    stage = _stage(tmp_path)
+    (stage / "msmoe-x.log").write_text("x", encoding="utf-8")
+    (stage / "older.log").write_text("x", encoding="utf-8")
+    _marker(stage)
+    out = _scan(stage)
+    files = sources.activity_files(out["launch"], [])
+    assert [f["role"] for f in files] == ["log"]
+    # The marker names msmoe-x.log, so the glob's newest must not be added a
+    # second time under a different reading of the same file.
+    logs = sorted((stage / n for n in ("msmoe-x.log", "older.log")))
+    parsed = [sources.parse_run_log(p, 4096) for p in logs]
+    parsed.sort(key=lambda r: r.mtime, reverse=True)
+    both = sources.activity_files(out["launch"], parsed)
+    assert len({f["path"] for f in both}) == len(both), "a file was counted twice"
+
+
+# ── ③ one run on stage, and the rest still in the payload ───────────
+
+def test_the_newest_run_by_manifest_started_is_the_current_one():
+    rungs = [{"name": "b", "path": "/x/b", "mtime": 5.0,
+              "manifest": {"started": 100.0}},
+             {"name": "a", "path": "/x/a", "mtime": 9.0,
+              "manifest": {"started": 900.0}}]
+    assert [r["name"] for r in sources.order_rungs(rungs)] == ["a", "b"]
+
+
+def test_directory_mtime_orders_a_run_with_no_manifest():
+    """Scraping is a first-class reading here, so an uninstrumented run still
+    has to be datable - otherwise "the most recent" would silently mean "the
+    most recent instrumented one"."""
+    rungs = [{"name": "b", "path": "/x/b", "mtime": 500.0, "manifest": None},
+             {"name": "a", "path": "/x/a", "mtime": 100.0, "manifest": None}]
+    assert sources.order_rungs(rungs)[0]["name"] == "b"
+
+
+def test_ordering_is_stable_when_nothing_can_be_dated():
+    rungs = [{"name": "a", "path": "/x/a", "mtime": None, "manifest": None},
+             {"name": "b", "path": "/x/b", "mtime": None, "manifest": None}]
+    assert [r["name"] for r in sources.order_rungs(rungs)] == ["b", "a"]
+    assert sources.run_started(rungs[0]) == 0.0
+
+
+def _instrumented(stage: Path, name: str, started: float, **over) -> Path:
+    run = stage / name
+    run.mkdir(parents=True)
+    payload = {"schema_version": 1, "name": name, "started": started,
+               "updated": started,
+               "stages": [{"id": "preflight", "label": "Preflight",
+                           "status": "done"}]}
+    payload.update(over)
+    (run / "msmoe-run.json").write_text(json.dumps(payload), encoding="utf-8")
+    return run
+
+
+def test_api_state_puts_one_run_first_and_still_carries_the_rest(tmp_path):
+    """The seam. A viewer that silently hides data is the thing this codebase
+    keeps fixing, so the earlier runs stay on /api/state and get COUNTED."""
+    stage = _stage(tmp_path)
+    _instrumented(stage, "dryrun_old", 100.0)
+    _instrumented(stage, "dryrun_new", 900.0)
+    cfg = TheatreConfig()
+    cfg.stages = [StageConfig(name="Lab", path=str(stage))]
+    st = TestClient(create_app(cfg)).get("/api/state").json()["stages"][0]
+    assert st["rungs"][0]["name"] == "dryrun_new"
+    assert st["current"].endswith("dryrun_new")
+    assert st["earlier"] == 1
+    assert len(st["rungs"]) == 2, "an earlier run was dropped from the payload"
+
+
+def test_only_the_current_run_is_handed_the_stage_level_readings(tmp_path):
+    """The log sits at STAGE level, so it is evidence about the run happening
+    NOW. Hanging a live log's mtime on a rung that finished last Tuesday would
+    be inventing a reading."""
+    stage = _stage(tmp_path)
+    _instrumented(stage, "dryrun_old", 100.0)
+    _instrumented(stage, "dryrun_new", time.time() - 46 * 60)
+    (stage / "msmoe-x.log").write_text("still going", encoding="utf-8")
+    out = _scan(stage)
+    assert "quiet" in out["rungs"][0]
+    assert "quiet" not in out["rungs"][1]
+
+
+def test_a_quiet_manifest_beside_a_live_log_is_not_reported_stalled(tmp_path):
+    """End to end, on the shape that produced eight false alarms an evening."""
+    stage = _stage(tmp_path)
+    started = time.time() - 46 * 60
+    _instrumented(stage, "dryrun_0.5B", started,
+                  stages=[{"id": "finetune.python", "label": "Fine-tune python",
+                           "status": "running", "started": started}])
+    (stage / "msmoe-x.log").write_text("step 601/602", encoding="utf-8")
+    current = _scan(stage)["rungs"][0]
+    assert current["manifest"]["state"] == "stalled", (
+        "the manifest-only reading is unchanged and still says what it says")
+    assert current["state"] == "running"
+    assert current["state_source"] == "manifest + file activity"
+    assert current["quiet"]["recent_write"] is True
+
+
+def test_a_run_that_really_did_go_quiet_still_says_so(tmp_path):
+    stage = _stage(tmp_path)
+    started = time.time() - 4 * 3600
+    _instrumented(stage, "dryrun_0.5B", started,
+                  stages=[{"id": "finetune.python", "label": "Fine-tune python",
+                           "status": "running", "started": started}])
+    current = _scan(stage)["rungs"][0]
+    assert current["state"] == "stalled"
+    assert current["state_source"] == "manifest"
+
+
+def test_the_room_no_longer_concludes_the_process_was_killed():
+    """The wording half, checked as text because the pack is what ships. One
+    mtime cannot support "probably killed", and the room said it in red on
+    every healthy hour-long stage."""
+    js = (Path(sources.__file__).resolve().parent / "viewer" / "ui"
+          / "scripts.js").read_text(encoding="utf-8")
+    assert "probably killed" not in js, (
+        "the viewer is drawing a conclusion no stat() can support")
+    assert "renderQuiet" in js and "recent_write" in js, (
+        "the viewer is no longer reading the activity evidence at all")

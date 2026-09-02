@@ -63,6 +63,24 @@ WARNED = "warned"
 STATUSES = (PENDING, RUNNING, DONE, SKIPPED, FAILED, REFUSED, WARNED)
 COMPLETE = (DONE, SKIPPED)
 
+# THE KEYS THIS READER CLAIMS TO UNDERSTAND. Everything else in a manifest is
+# kept verbatim in `Manifest.extra` rather than discarded.
+#
+# WHY A CATCH-ALL AND NOT JUST ANOTHER FIELD. The writer's own note on
+# build_id / resolved / defaults_files says they need no schema bump because
+# "unknown keys already fall through to `extra`" - which is true of the
+# writer's reader and has never been true of this one. Three fields have now
+# been added on the writing side and silently dropped on this side, each found
+# and fixed one at a time. A catch-all closes the CLASS of bug rather than its
+# latest instance: the next field the writer adds arrives visible on
+# /api/state under `extra`, unrendered but present, so somebody can see it is
+# there before anyone has thought to teach the viewer about it.
+KNOWN_KEYS = frozenset({
+    "schema_version", "recipe_id", "name", "size", "base", "experts",
+    "started", "updated", "finished", "ok", "stages", "refusals",
+    "build_id", "resolved", "defaults_files",
+})
+
 
 class UnreadableManifest(Exception):
     """A manifest file exists and this reader cannot honestly interpret it."""
@@ -108,6 +126,29 @@ class Manifest:
     ok: Optional[bool] = None
     stages: List[Stage] = field(default_factory=list)
     refusals: List[str] = field(default_factory=list)
+    # WHAT THIS RUN ACTUALLY BUILT, as opposed to what its recipe asked for.
+    # All three are stamped by the writer and were all three being discarded
+    # here, because this dataclass simply stopped at `refusals`.
+    #
+    #   build_id        digest of the resolved config
+    #   resolved        the FINGERPRINT: every resolved value that decides what
+    #                   the build produces, defaults already filled in. NOT the
+    #                   recipe verbatim - the writer deliberately excludes
+    #                   identity and paths, the force/redo flags, throughput
+    #                   tuning that changes how fast the teacher runs but not
+    #                   what it emits, and the smoke-test settings that inspect
+    #                   an artifact rather than build one. Anything rendering
+    #                   this has to say so; implying the excluded fields were
+    #                   absent from the recipe would be a lie of omission.
+    #   defaults_files  {path: sha256[:12]} for each defaults file that
+    #                   contributed, so a reader can see which defaults this
+    #                   run inherited without going to find the file.
+    build_id: str = ""
+    resolved: Dict[str, Any] = field(default_factory=dict)
+    defaults_files: Dict[str, str] = field(default_factory=dict)
+    # Everything a newer writer emits that this reader has never heard of.
+    # Carried, not dropped. See KNOWN_KEYS for why this exists at all.
+    extra: Dict[str, Any] = field(default_factory=dict)
 
     def stage(self, stage_id: str) -> Optional[Stage]:
         """Look one up by id. Mirrors ms_moe_maker.manifest.Manifest.stage.
@@ -213,6 +254,15 @@ def read(run_dir: Path) -> Optional[Manifest]:
         ok=raw.get("ok"),
         stages=stages,
         refusals=[str(r) for r in (raw.get("refusals") or [])],
+        # Lenient in the same direction as everything else in this module: a
+        # field of the wrong type reads as empty rather than raising. A
+        # manifest whose `resolved` is a string is a writer bug, and an empty
+        # playbill is a far smaller failure than refusing to show the run.
+        build_id=str(raw.get("build_id") or ""),
+        resolved=_mapping(raw.get("resolved")),
+        defaults_files={str(k): str(v)
+                        for k, v in _mapping(raw.get("defaults_files")).items()},
+        extra={k: v for k, v in raw.items() if k not in KNOWN_KEYS},
     )
 
 
@@ -224,6 +274,11 @@ def _num(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _mapping(value: Any) -> Dict[str, Any]:
+    """A dict, or an empty one. Never a raise and never a half-read shape."""
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def as_dict(manifest: Manifest) -> Dict[str, Any]:
@@ -247,6 +302,16 @@ def as_dict(manifest: Manifest) -> Dict[str, Any]:
         "done_count": manifest.done_count,
         "stage_count": len(manifest.stages),
         "refusals": manifest.refusals,
+        # The playbill's source. `resolved` is the FINGERPRINTED config and not
+        # a recipe file: a recipe on disk is mutable and can be edited after
+        # the run, while this is the record of what was actually built.
+        "build_id": manifest.build_id,
+        "resolved": manifest.resolved,
+        "defaults_files": manifest.defaults_files,
+        # Unrendered, deliberately present. A field this viewer has never heard
+        # of should be VISIBLE on /api/state the day it starts being written,
+        # not discovered a release later by whoever notices the gap.
+        "extra": manifest.extra,
         "stages": [
             {"id": s.id, "label": s.label, "status": s.status,
              "known_status": s.known_status, "started": s.started,

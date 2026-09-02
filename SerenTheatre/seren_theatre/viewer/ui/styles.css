@@ -88,6 +88,11 @@ body { font-size: 14px; }
     font-size: 10px;
 }
 .card.collapsed .twisty { transform: rotate(-90deg); }
+/* The step's own twisty needs its own rule: the one above is a DESCENDANT
+   selector from when there was only one level of collapsible, and it turns
+   every twisty inside a shut card - which is invisible, because the card is
+   shut. A step inside an OPEN card is the case that matters. */
+.step.collapsed > .step-head > .twisty { transform: rotate(-90deg); }
 .card.collapsed > .sub,
 .card.collapsed > .card-body { display: none; }
 @media (prefers-reduced-motion: reduce) {
@@ -122,58 +127,139 @@ body { font-size: 14px; }
 }
 #rehearsal-pill { background: #3a2a00; color: var(--warn); }
 
-/* -- the stage ladder ---------------------------------------------------- */
+/* -- the steps ------------------------------------------------------------ */
 /* The accent well. On Theatre the accent is pure black, and this is the one
    place that reads as deliberate rather than invisible: the room sits ON it. */
 .ladder {
     background: var(--accent, #000);
     border: 1px solid var(--line);
     border-radius: 8px;
-    padding: 8px;
+    padding: 6px;
 }
-.step {
-    display: grid;
-    grid-template-columns: 18px 1fr max-content;
-    gap: 12px;
-    align-items: center;
-    padding: 7px 10px;
-    border-radius: 6px;
-}
-.step + .step { margin-top: 2px; }
-.step:nth-child(odd) { background: rgba(255, 255, 255, .028); }
-.step .dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    background: var(--idle); justify-self: center;
-}
-.step .label { color: var(--text); }
-.step .meta { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
-.step .note { grid-column: 2 / -1; color: var(--warn); font-size: 12px; }
 
-.step.done    .dot { background: var(--ok); }
-.step.skipped .dot { background: transparent; box-shadow: inset 0 0 0 2px var(--ok); }
+/* A STEP IS NOW A SMALL CARD, not a ladder rung. The old flat ladder rendered
+   all seventeen stages of a gauntlet expanded, which is a wall you read; the
+   sketch is a stack of one-line rows that open to their detail. Same
+   collapsible mechanics as .card, one level down and quieter - the same design
+   system rather than a second one. */
+.step { border-radius: 6px; }
+.step + .step { margin-top: 3px; }
+.step-head {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) max-content 16px;
+    gap: 10px;
+    align-items: center;
+    padding: 5px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    user-select: none;
+}
+.step:nth-child(odd) > .step-head { background: rgba(255, 255, 255, .028); }
+.step-head:hover { background: rgba(255, 255, 255, .06); }
+.step.collapsed > .step-body { display: none; }
+.step-body { padding: 1px 9px 8px 34px; }
+.step .label { color: var(--text); overflow-wrap: anywhere; }
+.step .meta { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.step .glyph { justify-self: center; font-size: 12px; color: var(--idle); }
+.step .note { color: var(--warn); font-size: 12px; }
+.step .det { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.step .det code { overflow-wrap: anywhere; }
+
+/* THE STATUS COLOUR MOVED FROM A BULLET TO THE GLYPH, and nothing else about
+   it changed. The sketch puts the mark on the RIGHT of each row (✔ / ⏳ / …)
+   rather than a dot on the left, so the mark carries the colour: one indicator
+   for one fact, instead of a dot and a glyph both saying it. */
+.step.done    .glyph { color: var(--ok); }
+.step.skipped .glyph { color: var(--ok); opacity: .55; }
 .step.skipped .label { color: var(--muted); }
-.step.failed  .dot { background: var(--danger); }
-.step.refused .dot { background: var(--warn); }
+.step.failed  .glyph { color: var(--danger); }
+.step.refused .glyph { color: var(--warn); }
 /* WARNED IS IN THE REFUSED FAMILY, NOT THE DONE FAMILY. The writer's own words
    for it: "completed without the full result the stage exists for" - no
-   llama.cpp on the box, so export ran and converted nothing. So: green core
-   because something genuinely ran, amber ring because it did not deliver, and
-   sitting visually beside .refused (solid amber, a thing that never happened)
-   rather than beside .done. This is also why it stays OUT of the manifest
-   reader's COMPLETE tuple: done_count answers "how many stages produced their
-   artifact", and counting a warned stage would make that number mean two
-   different things depending on which status got you there. */
-.step.warned  .dot { background: var(--ok); box-shadow: 0 0 0 2px var(--warn); }
+   llama.cpp on the box, so export ran and converted nothing. So it sits
+   visually beside .refused (a thing that never happened) rather than beside
+   .done. This is also why it stays OUT of the manifest reader's COMPLETE
+   tuple: done_count answers "how many stages produced their artifact", and
+   counting a warned stage would make that number mean two different things
+   depending on which status got you there. */
+.step.warned  .glyph { color: var(--warn); }
 .step.pending .label { color: var(--faint); }
-.step.running .dot { background: var(--run); animation: pulse 1.6s ease-in-out infinite; }
+.step.pending .glyph { color: var(--faint); }
+.step.running .glyph { color: var(--run); animation: pulse 1.6s ease-in-out infinite; }
 .step.running .label { color: #fff; font-weight: 600; }
-/* An unrecognised status from a newer writer. Never painted as "pending" -
-   that would be inventing a reading. */
-.step.unknown .dot { background: transparent; box-shadow: inset 0 0 0 2px var(--warn); }
+/* An unrecognised status from a newer writer. Never painted as a state we do
+   know - that would be inventing a reading. */
+.step.unknown .glyph { color: var(--warn); }
 
 @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
 @media (prefers-reduced-motion: reduce) {
-    .step.running .dot { animation: none; }
+    .step.running .glyph { animation: none; }
+}
+
+/* -- one run, two columns: the steps and the playbill --------------------- */
+/* The playbill is a REVIEW panel, so it sits beside the ladder rather than
+   under it - the point is being able to read the config while looking at the
+   step it produced. Below ~900px it stacks; a phone has no second column and
+   pretending otherwise squeezes both. */
+.run {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+    gap: 14px;
+    align-items: start;
+}
+.run-main { min-width: 0; }
+@media (max-width: 900px) { .run { grid-template-columns: minmax(0, 1fr); } }
+
+.playbill {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    min-width: 0;
+}
+.playbill h4 {
+    margin: 0 0 6px; font-size: 11px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted);
+}
+.pb-note { color: var(--faint); font-size: 11.5px; line-height: 1.45;
+           margin-bottom: 10px; }
+/* Scrolls INSIDE the panel. Seventy-five fields is a genuinely long list, and
+   letting it set the height of the card would make the ladder beside it a
+   footnote - which is backwards, because the ladder is the glance. */
+.pb-body { max-height: 520px; overflow: auto; }
+.pb-group + .pb-group { margin-top: 10px; }
+.pb-group h5 {
+    margin: 0 0 3px; font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--faint);
+}
+.pb-group .kv { grid-template-columns: minmax(0, 42%) minmax(0, 1fr);
+                gap: 1px 10px; font-size: 12px; }
+.pb-group .kv dt,
+.pb-group .kv dd { overflow-wrap: anywhere; }
+.pb-group .kv dd { color: var(--muted); }
+
+/* -- staleness, reported rather than concluded ---------------------------- */
+/* The quiet-but-still-writing case is NOT an error and must not be painted as
+   one: it is the normal shape of a fine-tune, and it spent two evenings in the
+   .err box saying the process had probably been killed. It gets a note. The
+   nothing-anywhere case keeps .err, because that one is worth stopping for. */
+.quiet {
+    background: var(--bg); border: 1px solid var(--line);
+    border-left: 3px solid var(--warn);
+    border-radius: 8px; padding: 9px 12px; margin-bottom: 12px;
+    color: var(--muted); font-size: 12px; line-height: 1.5;
+}
+.reads {
+    margin-top: 5px; color: var(--faint);
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.err .reads { color: var(--muted); }
+
+/* The seam a Previous Shows section lands on. SHOWN, never silent - the other
+   runs are still on /api/state, and a viewer that hides data without saying so
+   is the failure this codebase keeps fixing. */
+.earlier {
+    color: var(--faint); font-size: 12px; margin: -6px 0 16px; padding: 0 2px;
 }
 
 /* -- badges -------------------------------------------------------------- */

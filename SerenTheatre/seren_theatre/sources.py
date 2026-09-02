@@ -588,7 +588,16 @@ def scan_rung(root: Path) -> Dict[str, Any]:
     "disk", or "disk (manifest unreadable)". The viewer shows it. A reader
     should always be able to tell how confident the display is entitled to be.
     """
+    try:
+        mtime = root.stat().st_mtime
+    except OSError:
+        mtime = None
     out: Dict[str, Any] = {"name": root.name, "path": str(root),
+                           # The ordering fallback for an UNINSTRUMENTED run,
+                           # which has no manifest `started` to sort on.
+                           # Scraping is a first-class reading here and not a
+                           # consolation prize, so it has to be orderable too.
+                           "mtime": mtime,
                            "specialists": [], "skeleton": False,
                            "final": False, "gguf": None, "smoketested": False,
                            "smoke": None,
@@ -644,6 +653,147 @@ def scan_rung(root: Path) -> Dict[str, Any]:
     return out
 
 
+# ── has anything happened lately: readings, never a verdict ─────────────────
+#
+# THE STALLED LIE THIS REPLACES. `Manifest.stale()` compares `updated` against
+# STALE_AFTER_SECONDS - fifteen minutes. But the manifest is rewritten on STAGE
+# TRANSITIONS, and a fine-tune stage runs about 58 minutes (602 steps at
+# 5.79 s/it). So every fine-tune stage of every healthy build crossed the
+# threshold, and the room painted it red saying the process "was probably
+# killed" - eight consecutive hour-long false alarms on an 8-expert gauntlet,
+# while the thing trained perfectly.
+#
+# NO SINGLE THRESHOLD CAN FIX THAT, and raising the number is the wrong SHAPE
+# of answer rather than the wrong value: it measures a stage-transition cadence
+# against stages that range from seconds (preflight) to over an hour
+# (fine-tune). Any value large enough to stop lying about a fine-tune is far
+# too large to notice a preflight that died.
+#
+# The evidence was on disk the whole time and unread. The log and the events
+# file are written CONTINUOUSLY - every tqdm redraw, every metrics dict - so
+# "the manifest is quiet AND the log is quiet" is a completely different
+# reading from "the manifest is quiet and the log wrote three seconds ago", and
+# only the first of those is interesting.
+#
+# So this reports MTIMES and refuses to draw the conclusion, for exactly the
+# reason read_launch's docstring already gives: "manifest quiet 46m · log wrote
+# 3s ago" is a fact somebody can act on, and "the process was probably killed"
+# is not something a stat() can tell you. It was said in red, on every healthy
+# hour-long stage, twice watched.
+
+
+def activity_files(launch: Optional[Dict[str, Any]],
+                   logs: List[RunLog]) -> List[Dict[str, Any]]:
+    """The files whose mtimes bear on whether anything is still happening.
+
+    Reuses read_launch's per-file machinery rather than growing a second one -
+    `_file_activity` already answers exists/mtime/size/since and already
+    reports absence AS a reading. The marker's files come first because the
+    writer NAMED them; the newest glob-matched log is added after because a
+    build run by hand drops no marker at all, and the hand-run path is the
+    documented one.
+
+    NEWEST LOG ONLY. An older log in the same directory belongs to a previous
+    run, and reading a finished run's log as evidence about this one is the
+    cross-attribution mistake this module refuses to make everywhere else.
+    """
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for entry in (launch or {}).get("files") or []:
+        path = entry.get("path")
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append(entry)
+    for entry in logs[:1]:
+        if entry.path in seen:
+            continue
+        seen.add(entry.path)
+        out.append(_file_activity(entry.path, "log"))
+    return out
+
+
+def quiet_reading(updated: Optional[float], files: List[Dict[str, Any]],
+                  now: Optional[float] = None,
+                  after: float = _manifest.STALE_AFTER_SECONDS
+                  ) -> Dict[str, Any]:
+    """How long each source of evidence has been silent. Pure, and a READING.
+
+    Deliberately carries no key named for a live/dead conclusion - the same
+    line test_nothing_in_the_launch_reading_claims_the_run_is_alive_or_dead
+    holds on the launch dict, held here for the same reason. `recent_write` is
+    the one derived boolean and it is a fact about FILES: something was written
+    inside the window. What that implies about a process is the reader's to
+    decide, and the room prints the numbers so they can.
+    """
+    now = now if now is not None else time.time()
+    manifest_quiet = max(0.0, now - updated) if updated else None
+    reads: List[Dict[str, Any]] = []
+    for entry in files or []:
+        mtime = entry.get("mtime")
+        reads.append({
+            "role": entry.get("role"),
+            "path": entry.get("path"),
+            "exists": bool(entry.get("exists")),
+            "quiet_for": max(0.0, now - mtime) if mtime else None,
+        })
+    quiets = [r["quiet_for"] for r in reads if r["quiet_for"] is not None]
+    recent = [q for q in quiets if q <= after]
+    if manifest_quiet is not None:
+        quiets.append(manifest_quiet)
+    return {
+        "after_seconds": after,
+        "manifest_quiet_for": manifest_quiet,
+        "files": reads,
+        "newest_activity_for": min(quiets) if quiets else None,
+        # FILES ONLY. A fresh manifest already means "not stale"; this is the
+        # evidence the manifest by itself cannot supply.
+        "recent_write": bool(recent),
+    }
+
+
+def activity_state(manifest_state: str,
+                   quiet: Optional[Dict[str, Any]]) -> str:
+    """The run's state once the log has had a vote. `stalled` DOWNGRADES ONLY.
+
+    Note which way this fails. Absent evidence leaves `stalled` exactly where
+    the manifest put it - the word is withdrawn only when a file was positively
+    seen to have been written inside the window. An empty set is not agreement,
+    and "there is no log to read" must never quietly render as "still going".
+
+    Decided here rather than in the browser for the reason manifest.as_dict
+    already gives: two implementations of "is this run dead" would eventually
+    disagree, and they would disagree on screen.
+    """
+    if manifest_state != "stalled" or not quiet:
+        return manifest_state
+    return "running" if quiet.get("recent_write") else "stalled"
+
+
+def run_started(rung: Dict[str, Any]) -> float:
+    """When this run began: manifest `started` first, directory mtime after."""
+    found = rung.get("manifest") or {}
+    for value in (found.get("started"), rung.get("mtime")):
+        try:
+            stamp = float(value)
+        except (TypeError, ValueError):
+            continue
+        if stamp:
+            return stamp
+    return 0.0
+
+
+def order_rungs(rungs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Newest run first. Name breaks ties, so the answer is the same twice.
+
+    Determinism is not a nicety here: a viewer that shows a different run as
+    "current" on two boxes reading the same directory is worse than one that
+    shows the wrong one consistently, because nobody can reproduce it.
+    """
+    return sorted(rungs, key=lambda r: (run_started(r), str(r.get("name"))),
+                  reverse=True)
+
+
 def scan_stage(name: str, root: Path, log_globs: List[str],
                rung_globs: List[str], limit: int) -> Dict[str, Any]:
     logs: List[RunLog] = []
@@ -671,6 +821,41 @@ def scan_stage(name: str, root: Path, log_globs: List[str],
     # on this dict changes. It is a record of a START and never a second opinion
     # about progress; the manifest keeps that job.
     launch, launch_error = read_launch(root)
+
+    # ONE RUN PER STAGE ON SCREEN - the current one, or the most recent - and
+    # EVERY run still in the payload. A gauntlet leaves a rung directory per
+    # size and the room rendered all of them, every stage of every one, which
+    # is the opposite of the brief: you glance at it, you learn where the run
+    # is, you look away.
+    #
+    # Ordered HERE rather than in the browser so /api/state and the page agree
+    # about which run is current. `earlier` is a COUNT and not a deletion: a
+    # viewer that silently drops data is the exact failure this file keeps
+    # fixing, and the count is also the seam a Previous Shows section lands on.
+    rungs = order_rungs(rungs)
+
+    # The log and events files sit at STAGE level - beside the marker, in the
+    # cwd the build was launched in - so this evidence belongs to the run that
+    # is happening NOW and is attached to that one alone. Hanging a live log's
+    # mtime on a rung that finished last Tuesday would be inventing a reading.
+    if rungs:
+        current = rungs[0]
+        found = current.get("manifest")
+        if found is not None:
+            quiet = quiet_reading(found.get("updated"),
+                                  activity_files(launch, logs))
+            current["quiet"] = quiet
+            current["state"] = activity_state(found.get("state"), quiet)
+            # Which readings decided the word above. Same honesty as `source`
+            # one field over: a person should always be able to tell how
+            # confident the display is entitled to be.
+            current["state_source"] = (
+                "manifest" if current["state"] == found.get("state")
+                else "manifest + file activity")
+
     return {"name": name, "path": str(root), "exists": root.is_dir(),
             "logs": [asdict(r) for r in logs], "rungs": rungs,
+            # Which of `rungs` is the one on stage, and how many are behind it.
+            "current": rungs[0]["path"] if rungs else None,
+            "earlier": max(0, len(rungs) - 1),
             "launch": launch, "launch_error": launch_error}
