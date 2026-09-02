@@ -62,38 +62,169 @@ class StagehandUnavailable(RuntimeError):
     """ms-moe-maker is not installed, so there is nothing to fork."""
 
 
-def resolve_command() -> List[str]:
-    """Find `ms-moe-maker`, preferring the literal console script.
+# ── which install answers ────────────────────────────────────────────────────
+#
+# MODULE STATE, ON PURPOSE, AND IT IS THE SAFER OF TWO BAD OPTIONS.
+#
+# Five places fork the builder: describe, validate, build_argv, run and
+# run_detached. They must all reach the SAME binary - this module's own
+# docstring warns that a second answer to one question is how a dashboard
+# starts disagreeing with itself, and "Backstage described install A while the
+# build ran install B" is that failure exactly, with no symptom but a form that
+# looks slightly stale.
+#
+# Threading a config argument through all five means five chances to forget
+# one, and the forgotten one degrades silently to PATH. So the configuration is
+# set once, here, and `resolve_command` is the only door. Every call site keeps
+# its signature and none of them can opt out.
+#
+# tests/test_stagehand.py asserts the door is the only one - by AST, over this
+# package - so a sixth fork added later cannot quietly grow its own resolution.
+_PIPELINE = None
 
-    Order matters and the fallback is deliberately second-class:
 
-      1. `ms-moe-maker` on PATH - the documented command, the one in the README, the
-         one a person types. This is the path we want every automated run to
-         exercise.
-      2. `python -m ms_moe_maker` - works, but it is NOT the documented command, so
-         using it means the automated run is no longer testing the hand-run
-         path. The caller is told when this happens rather than left to assume
-         the guarantee still holds.
+def configure(pipeline) -> None:
+    """Point every fork at one install. Called by create_app and by the CLI.
 
-    Raises StagehandUnavailable if neither exists, because the honest failure
-    for a missing optional dependency is a sentence naming the extra - not a
-    FileNotFoundError from subprocess three frames down.
+    Pass None to reset, which is what a test wants between cases.
     """
+    global _PIPELINE
+    _PIPELINE = pipeline
+
+
+def _venv_candidates(venv: Path) -> List[List[str]]:
+    """The console script inside a venv, then that venv's own interpreter.
+
+    STILL INSIDE THE VENV NAMED, both times. A venv that has the package but no
+    console script - an editable install, a `pip install .` that skipped
+    scripts - is a real and recoverable state, and falling back to the venv's
+    own `python -m` keeps the promise the setting made. Falling back to the
+    SYSTEM python would not: it would run a different install while reporting
+    that the config was honoured.
+    """
+    if os.name == "nt":
+        script = venv / "Scripts" / (MS_MOE_COMMAND + ".exe")
+        python = venv / "Scripts" / "python.exe"
+    else:
+        script = venv / "bin" / MS_MOE_COMMAND
+        python = venv / "bin" / "python"
+    out = []
+    if script.is_file():
+        out.append([str(script)])
+    if python.is_file():
+        out.append([str(python), "-m", "ms_moe_maker"])
+    return out
+
+
+class Resolution:
+    """What we resolved, where it came from, and why it failed if it did.
+
+    A small object rather than a bare argv because the API reports all three.
+    "Which ms-moe-maker is this?" had no answer anywhere in the service, and a
+    person debugging a stale craft form had nothing to look at.
+    """
+
+    __slots__ = ("argv", "source", "error")
+
+    def __init__(self, argv=None, source="", error=""):
+        self.argv = list(argv or [])
+        self.source = source
+        self.error = error
+
+    def as_dict(self) -> dict:
+        return {"command": " ".join(self.argv) if self.argv else "",
+                "source": self.source, "error": self.error,
+                # The documented command was used, rather than the second-class
+                # `-m` form. Reported because an automated run on the fallback
+                # is no longer exercising the path a person types.
+                "literal": bool(self.argv) and not (
+                    len(self.argv) > 1 and self.argv[1] == "-m")}
+
+
+def resolve() -> Resolution:
+    """The single resolution. Never raises; the error is a field.
+
+    Order, and the first three are only reachable when nothing is configured:
+
+      0. `pipeline.command` - an explicit path. Nothing beats being told.
+      0b. `pipeline.venv` - the console script in it, else its own python -m.
+      1. `ms-moe-maker` on PATH - the documented command, what a person types.
+      2. `python -m ms_moe_maker` - works, NOT the documented command, so the
+         caller is told rather than left to assume the guarantee holds.
+
+    A CONFIGURED-BUT-MISSING INSTALL IS AN ERROR AND STOPS HERE. Dropping back
+    to PATH would be silently doing the exact thing the setting exists to
+    prevent, and the person would see a working form describing the wrong box.
+    """
+    cfg = _PIPELINE
+    if cfg is not None and getattr(cfg, "command", ""):
+        raw = os.path.expanduser(cfg.command)
+        # A PATH SEARCH ONLY FOR A BARE NAME, and the distinction is not
+        # pedantry - it was a live hole, caught by the test written to forbid
+        # exactly this. `command: ms-moe-maker` means "the one on PATH" and
+        # searching is right. `command: /opt/msmoe/bin/ms-moe-maker` names ONE
+        # file, and if that file is not there the honest answer is an error:
+        # searching PATH would hand back a different install while reporting
+        # `pipeline.command`, which is a config being ignored while looking
+        # honoured. That is worse than no setting at all.
+        named_a_path = os.sep in raw or (os.altsep and os.altsep in raw)
+        path = Path(raw)
+        if path.is_file():
+            return Resolution([str(path)], "pipeline.command")
+        if not named_a_path:
+            found = shutil.which(raw)
+            if found:
+                return Resolution([found], "pipeline.command (found on PATH)")
+        return Resolution(error=(
+            f"pipeline.command is set to {cfg.command!r} and there is no such "
+            f"{'file' if named_a_path else 'command'}. Theatre will not fall "
+            f"back to PATH here: falling back is the behaviour this setting "
+            f"exists to prevent, and it would describe a different install "
+            f"than the one you asked for."))
+
+    if cfg is not None and getattr(cfg, "venv", ""):
+        venv = Path(os.path.expanduser(cfg.venv))
+        candidates = _venv_candidates(venv)
+        if candidates:
+            argv = candidates[0]
+            kind = "console script" if len(argv) == 1 else "python -m"
+            return Resolution(argv, f"pipeline.venv ({kind})")
+        return Resolution(error=(
+            f"pipeline.venv is set to {cfg.venv!r} but there is no "
+            f"{MS_MOE_COMMAND} and no python inside it. Expected "
+            f"{venv / ('Scripts' if os.name == 'nt' else 'bin')}. Theatre "
+            f"will not fall back to PATH: that is what the setting is for."))
+
     found = shutil.which(MS_MOE_COMMAND)
     if found:
-        return [found]
+        return Resolution([found], "PATH")
 
     try:
         import ms_moe_maker  # noqa: F401
     except ImportError:
-        raise StagehandUnavailable(
-            "ms-moe-maker is not installed. Stagehand is the half of SerenTheatre "
-            "that does the work, and it is an opt-in extra:\n"
+        return Resolution(error=(
+            "ms-moe-maker is not installed. Stagehand is the half of "
+            "SerenTheatre that does the work, and it is an opt-in extra:\n"
             "    pip install 'seren-theatre[stagehand]'\n"
             "The viewer works perfectly without it - watching a run has never "
-            "required being able to start one."
-        ) from None
-    return [sys.executable, "-m", "ms_moe_maker"]
+            "required being able to start one.\n"
+            "If it IS installed but in another venv, name that venv:\n"
+            "    pipeline:\n      venv: /path/to/that/venv"))
+    return Resolution([sys.executable, "-m", "ms_moe_maker"],
+                      "this interpreter (python -m)")
+
+
+def resolve_command() -> List[str]:
+    """The argv, or StagehandUnavailable. The one door every fork goes through.
+
+    Raises rather than returning empty, because the honest failure for a
+    missing optional dependency is a sentence naming the extra - not a
+    FileNotFoundError from subprocess three frames down.
+    """
+    found = resolve()
+    if not found.argv:
+        raise StagehandUnavailable(found.error)
+    return found.argv
 
 
 def build_argv(recipe: Path, *, json_events: bool = True,
@@ -170,6 +301,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="anything after -- is passed straight to ms-moe-maker "
                          "(e.g. -- --dryrun --offline)")
     a = ap.parse_args(argv)
+
+    # SAME RESOLUTION AS THE SERVICE. `--check` exists to answer "will a build
+    # work from here", and it would be a poor answer if it consulted a
+    # different install than the running Theatre does.
+    try:
+        from .config import load_config
+        configure(load_config().pipeline)
+    except Exception:                   # noqa: BLE001 - PATH is a fine default
+        pass
 
     if a.check:
         try:
