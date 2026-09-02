@@ -21,10 +21,48 @@
     <div id="logs-body"></div>
 </section>
 
+<section class="view" id="surgeries">
+    <div class="toolbar">
+        <span class="hint" id="arc-where">archive</span>
+        <div class="spacer"></div>
+        <!-- Tick two runs and this lights up. The archive is a filing cabinet
+             until you can put two runs beside each other; this is the button
+             that makes it an instrument. -->
+        <span class="hint" id="cmp-status"></span>
+        <button id="cmp-go" disabled>Compare</button>
+        <button id="arc-reload" title="re-read the archive">Refresh</button>
+    </div>
+    <div id="cmp-body"></div>
+    <div id="arc-body"></div>
+</section>
+
+<section class="view" id="repertoire">
+    <div class="toolbar">
+        <span class="hint" id="rep-where">prompt books</span>
+        <div class="spacer"></div>
+        <!-- A plain file input, not a drop zone: this has to work over an SSH
+             tunnel on a headless box, same reason the recipe editor is a
+             textarea and Starwright is a TUI. -->
+        <input type="file" id="rep-file" accept=".zip" hidden>
+        <button id="rep-import">Import a bundle…</button>
+        <button id="rep-reload" title="re-read the shelf">Refresh</button>
+    </div>
+    <div id="rep-out"></div>
+    <div id="rep-body"></div>
+</section>
+
 <section class="view" id="backstage">
     <div class="toolbar">
         <span class="hint" id="bs-where">recipes</span>
         <div class="spacer"></div>
+        <!-- THIS PANEL DOES NOT POLL. loadBackstage runs once at page import,
+             so a recipe saved in another window, an ms-moe-maker upgraded on
+             the box, or a registry yaml dropped in ~/.msmoe never appeared
+             until a hard refresh - which reads as "backstage stopped working"
+             rather than as "this panel is a snapshot". Polling it would fork
+             `describe` every five seconds forever; a button costs one click
+             and never surprises anyone. -->
+        <button id="bs-reload" title="re-read the recipe list and re-ask the box">Refresh</button>
         <select id="bs-list"><option value="">— new recipe —</option></select>
         <input id="bs-name" placeholder="name" size="16">
         <button id="bs-validate">Validate</button>

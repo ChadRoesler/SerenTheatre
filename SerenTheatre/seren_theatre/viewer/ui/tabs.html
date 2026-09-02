@@ -10,6 +10,17 @@
      tabbar, before the click. -->
 <button class="tab" data-tab="stages">Stages <span class="tab-count" id="count-stages"></span></button>
 <button class="tab" data-tab="logs">Logs <span class="tab-count" id="count-logs"></span></button>
+<!-- Previous Surgeries: runs that HAPPENED, which is not the same list as runs
+     you can still open. It is a read route, so it exists on a plain viewer -
+     the person who most needs the history is the one watching a directory
+     somebody else built in. -->
+<button class="tab" data-tab="surgeries">Previous Surgeries <span class="tab-count" id="count-surgeries"></span></button>
+<!-- The Repertoire: what this box is PREPARED TO PERFORM. A company's
+     repertoire is the set of works it can stage again, and one entry in it is
+     a prompt book - the stage manager's annotated master copy, which exists so
+     another company can restage the show. That is exactly the artifact you
+     hand a friend. -->
+<button class="tab" data-tab="repertoire">Repertoire <span class="tab-count" id="count-books"></span></button>
 <!-- Backstage is HIDDEN, not absent, when [stagehand] is not installed.
      A tab with no panel is a button that does nothing, and
      test_every_tab_has_a_panel_and_every_panel_a_tab enforces the

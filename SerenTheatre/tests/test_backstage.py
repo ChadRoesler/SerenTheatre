@@ -76,7 +76,13 @@ def test_mutating_routes_sees_inside_an_included_router():
 def test_backstage_mounts_exactly_the_expected_write_surface(client):
     paths = {p for p, _ in mutating_routes(client.app)}
     assert paths == {"/api/backstage/recipes", "/api/backstage/validate",
-                     "/api/backstage/run"}, (
+                     "/api/backstage/run",
+                     # The repertoire. Importing and deleting a prompt book
+                     # are writes and belong here; LOOKING at the shelf,
+                     # reading a book and downloading the zip are read routes
+                     # in app.py and stay available on a plain viewer.
+                     "/api/backstage/books",
+                     "/api/backstage/books/{book_id}"}, (
         "Backstage's write surface changed. That is allowed, but it is not "
         "allowed to change QUIETLY - this list is what GET / advertises.")
 

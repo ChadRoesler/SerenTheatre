@@ -222,13 +222,23 @@ def _registries() -> Dict[str, Any]:
     not reason", and the think block gets scored as though it were the answer.
     """
     out: Dict[str, Any] = {"kinds": [], "validators": [], "reasoning": {},
-                           "box": {}, "errors": []}
+                           "box": {}, "errors": [], "pipeline": {}}
+
+    # WHICH INSTALL IS ABOUT TO ANSWER. Reported beside the answers rather than
+    # somewhere else, because every error below is a statement about a specific
+    # binary and was previously attributed to no binary at all - "upgrade it"
+    # is not actionable until you know which `it`.
+    out["pipeline"] = stagehand.resolve().as_dict()
+    if out["pipeline"].get("error"):
+        out["errors"].append(out["pipeline"]["error"])
 
     box = _ask_the_box()
     if box is None:
+        where = out["pipeline"].get("command") or "no command resolved"
         out["errors"].append(
-            "could not ask the box: `ms-moe-maker describe` did not answer. "
-            "The craft form is showing nothing rather than guessing.")
+            f"could not ask the box: `{where} describe` did not answer "
+            f"(missing, too slow, non-zero, or unparseable output). The craft "
+            f"form is showing nothing rather than guessing.")
         return out
 
     out["kinds"] = _rows(box.get("kinds"))
@@ -251,8 +261,12 @@ def _registries() -> Dict[str, Any]:
     for key in ("validators", "reasoning"):
         if key not in box:
             out["errors"].append(
-                f"this ms-moe-maker does not report {key!r} from `describe`; "
-                f"upgrade it to see that half of the form.")
+                f"the ms-moe-maker at "
+                f"{out['pipeline'].get('command') or '(unknown)'} does not "
+                f"report {key!r} from `describe`; upgrade THAT install to see "
+                f"that half of the form. If it is not the one you develop in, "
+                f"set `pipeline.venv` in the config - the answer is coming "
+                f"from whichever binary is named there.")
     return out
 
 
@@ -353,6 +367,141 @@ def router() -> APIRouter:
 
         started["stage"] = stage.name
         return started
+
+    # ── the repertoire: prompt books ────────────────────────────────────────
+    #
+    # A PROMPT BOOK is a recipe bundle somebody can stage again - the stage
+    # manager's annotated master copy, which is the artifact that exists so
+    # another company can restage the show. `ms-moe-maker bundle` makes them.
+    #
+    # WHY IMPORT LIVES BEHIND [stagehand] AND LISTING DOES NOT. These are
+    # writes, and a base install must keep exposing zero verbs that change
+    # anything. That is not a hardship for the sharing story: to build from a
+    # book you need ms-moe-maker, so anyone importing one has the workshop
+    # already. Reading the shelf - what is on it, what a recipe says, handing
+    # the zip back on - are read routes in app.py, available to a plain viewer.
+    #
+    # RAW BODY, NOT multipart. A file upload would mean adding python-multipart
+    # to a package whose entire dependency list is four things, for a POST that
+    # `fetch(url, {method: 'POST', body: file})` already does perfectly well.
+
+    @api.post("/books")
+    async def import_book(request: Request, name: str = "") -> dict:
+        """Take in a bundle. Store the bytes; keep the claim it makes.
+
+        VALIDATION IS BEST-EFFORT AND NEVER A REFUSAL, and that is the whole
+        sharing story rather than a leniency. The box a bundle is given to is
+        exactly the one whose ms-moe-maker might be older, or differently
+        configured, or absent from PATH - refusing the gift on the machine it
+        was given to would make the feature fail at precisely its purpose. So
+        it is stored either way and marked with what could not be checked.
+        """
+        cfg = request.app.state.cfg
+        archive = request.app.state.open_archive()
+        if archive is None:
+            raise HTTPException(
+                503, f"the archive is not available, so there is nowhere to "
+                     f"put a prompt book: "
+                     f"{request.app.state.archive_error or 'disabled'}")
+
+        raw = await request.body()
+        if not raw:
+            raise HTTPException(400, "no bundle in the request body")
+
+        import tempfile
+        from .archive import blobs as _blobs
+        from .archive import bundle as _bundle
+
+        handle, tmp = tempfile.mkstemp(suffix=".zip")
+        os.close(handle)
+        tmp_path = Path(tmp)
+        try:
+            tmp_path.write_bytes(raw)
+            try:
+                got = _bundle.read(tmp_path)
+            except _bundle.UnreadableBundle as exc:
+                # THE ONLY REFUSAL. Not "this recipe is wrong" - that is a
+                # judgement somebody else's box is entitled to disagree with -
+                # but "this archive is not safe to open", which is not a
+                # matter of opinion.
+                raise HTTPException(400, str(exc)) from exc
+
+            store = _blobs.Blobs(assert_outside_stages(cfg.archive.blobs_dir(),
+                                                       cfg))
+            digest = store.put(tmp_path)
+        finally:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+        meta = got["meta"] or {}
+        # RE-IMPORTING MUST NOT RENAME WHAT IS ALREADY ON THE SHELF. The id is
+        # the content hash, so importing the same zip twice is one row - and
+        # the upsert would otherwise reset a name somebody chose back to
+        # whatever the bundle calls itself. An explicit ?name= still wins,
+        # because that is somebody saying it on purpose.
+        existing = archive.prompt_book(digest)
+        kept_name = (existing or {}).get("name") or ""
+        book = {
+            # THE CONTENT HASH IS THE ID. Importing the same bundle twice is
+            # one row, not two, and it is the same row your friend has - which
+            # makes "we are looking at the same book" checkable rather than
+            # asserted.
+            "book_id": digest,
+            "name": str(name or kept_name or meta.get("name") or "untitled"),
+            "created": meta.get("created"),
+            "imported": time.time(),
+            "build_id": str(meta.get("build_id") or ""),
+            "bytes": int(got["bytes"]),
+            # EXTRACTED FOR VIEWING, per the shape of the thing: you should be
+            # able to read what you were given without unpacking it.
+            "recipe": got["recipe"],
+            "notes": got["notes"],
+            "meta": json.dumps(meta, sort_keys=True),
+        }
+        archive.put_prompt_book(book)
+
+        checked = _validate_text(cfg, got["recipe"])
+        return {"book_id": digest, "name": book["name"],
+                "bytes": book["bytes"], "data_experts": got["data_experts"],
+                "meta_error": got["meta_error"],
+                # IN FRONT OF A PERSON, not in a log. A recipe naming an
+                # eval.script runs that script with the interpreter.
+                "executes": got["executes"],
+                "validated": checked}
+
+    @api.delete("/books/{book_id}")
+    def delete_book(book_id: str, request: Request) -> dict:
+        """Remove a book, and its bytes only if nothing else names them.
+
+        DEDUP CUTS BOTH WAYS and this is where it bites. Two prompt books that
+        share a corpus share the blob, because identical bytes have identical
+        names - so deleting one book must not delete bytes the other still
+        points at. The refcount lives in the rows, which is why the store's
+        own `delete` takes an instruction rather than a decision.
+        """
+        archive = request.app.state.open_archive()
+        if archive is None:
+            raise HTTPException(503, "the archive is not available")
+        from .archive import blobs as _blobs
+
+        gone = archive.delete_prompt_book(book_id)
+        if not gone:
+            raise HTTPException(404, f"no prompt book {book_id!r}")
+
+        still_named = archive.prompt_book_ids()
+        freed = False
+        if book_id not in still_named:
+            cfg = request.app.state.cfg
+            store = _blobs.Blobs(cfg.archive.blobs_dir())
+            try:
+                freed = store.delete(book_id)
+            except _blobs.BlobError:
+                # The row is gone either way. A blob that will not delete is an
+                # orphan, which `orphans()` reports and nothing sweeps.
+                freed = False
+        return {"deleted": book_id, "bytes_freed": freed}
 
     return api
 
