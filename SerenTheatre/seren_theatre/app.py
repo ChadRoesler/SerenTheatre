@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 
 # Hard imports, not guarded ones. Both are core dependencies and config.py
@@ -56,7 +56,7 @@ __all__ = ["ACCENT", "DEFAULT_PORT", "SERVICE", "create_app"]
 # It also stops being a NameError. Removing _describe.py took the definition
 # with it and left the reference on the SERVICE line below, so `import
 # seren_theatre.app` raised and every entry point into this package was dead.
-ACCENT = "#0a0a0a"
+ACCENT = "#121212"
 
 try:                                    # meninges is the family's shell
     from seren_meninges.viewer import render_from_dir
@@ -170,6 +170,25 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
     # or version-skewed extra must leave a working VIEWER behind, not take the
     # whole service down. Watching a run has never required being able to
     # start one, and that stays true when the starting half is broken.
+    # POINT EVERY FORK AT ONE INSTALL, BEFORE ANYTHING CAN FORK.
+    #
+    # Before this line, which ms-moe-maker Theatre talked to was a property of
+    # the SHELL THE SERVICE WAS STARTED FROM - `shutil.which`, resolved at the
+    # moment of the first call. Start it from a login shell carrying an old
+    # install on PATH and Backstage describes that one while your work happens
+    # in another venv, and the only symptom is a craft form that looks slightly
+    # out of date. See PipelineConfig.
+    #
+    # Imported here rather than at module scope because
+    # test_the_viewer_never_imports_stagehand pins that the viewer's import
+    # graph stays clean, and configuring is not importing on a viewer's behalf
+    # - it is one function call the moment an app is built.
+    try:
+        from . import stagehand as _stagehand
+        _stagehand.configure(getattr(cfg, "pipeline", None))
+    except Exception as exc:            # noqa: BLE001 - viewer must survive
+        diag(f"[seren-theatre] could not set the pipeline command ({exc})")
+
     app.state.backstage = False
     try:
         from .backstage import router as _backstage_router
@@ -178,6 +197,15 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
         diag("[seren-theatre] backstage mounted ([stagehand] is installed)")
     except Exception as exc:            # noqa: BLE001 - viewer must survive
         diag(f"[seren-theatre] backstage not mounted ({exc})")
+
+    def _pipeline_block() -> dict:
+        """The resolution, or why there isn't one. Never raises."""
+        try:
+            from .stagehand import resolve as _resolve
+            return _resolve().as_dict()
+        except Exception as exc:        # noqa: BLE001
+            return {"command": "", "source": "", "error": str(exc),
+                    "literal": False}
 
     @app.get("/health")
     def health() -> dict:
@@ -208,9 +236,87 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
                 # source; a person who did not should be able to prove the
                 # list is empty.
                 "backstage": bool(getattr(app.state, "backstage", False)),
+                # WHICH BUILDER, on the root document, where a person looks
+                # first. It was unanswerable from outside the process: two
+                # installs, one of them stale, and no way to tell which one
+                # replied. `source` says how it was chosen so a config that is
+                # being ignored says so instead of looking honoured.
+                "pipeline": _pipeline_block(),
                 "write_routes": [p for p, _ in mutating_routes(app)],
                 "updates": await _updates_block(app),
                 "viewer": "/viewer", "state": "/api/state"}
+
+    # ── the archive ──────────────────────────────────────────────────────
+    #
+    # OPENED LAZILY AND NEVER FATALLY. A viewer whose whole job is to survive
+    # the mess must not be the thing that fails to start because a database
+    # file is on a full disk. So the handle is built on first use, the error is
+    # kept, and it is REPORTED in the payload rather than raised - the same
+    # bargain every other reading in this service makes.
+    app.state.archive = None
+    app.state.archive_error = ""
+
+    def _archive():
+        """The open archive, or None. Tries once; remembers the failure."""
+        if app.state.archive is not None or app.state.archive_error:
+            return app.state.archive
+        if not getattr(cfg, "archive", None) or not cfg.archive.enabled:
+            app.state.archive_error = "archive: disabled in config"
+            return None
+        try:
+            from .archive.store import connect
+            # `cfg` is passed so the stage guard applies: an archive written
+            # inside a watched directory would be deleted by exactly the
+            # cleanup this feature exists to survive, and would make the
+            # viewer a participant in what it is watching.
+            app.state.archive = connect(cfg.archive.resolved_dsn(), cfg)
+            diag(f"[seren-theatre] archive: {app.state.archive.path}")
+        except Exception as exc:        # noqa: BLE001 - a viewer must survive
+            app.state.archive_error = f"archive unavailable: {exc}"
+            diag(f"[seren-theatre] {app.state.archive_error}")
+        return app.state.archive
+
+    def _harvest(stages) -> dict:
+        """Copy finished runs into the archive. A READ that writes, on purpose.
+
+        Two invariants are NOT broken by this and the distinction is worth
+        being precise about, because "the viewer writes now" sounds like the
+        end of the read-only promise and is not:
+
+          * No mutating ROUTE is added. A base install still exposes zero
+            verbs that change anything, which is what test_app asserts.
+          * Nothing is written INSIDE A STAGE. stageguard resolved the archive
+            path when it was opened; the thing Theatre must never do is
+            perturb what it is watching, and this writes somewhere else.
+
+        Harvest lives on the scan rather than a timer or a button because the
+        scan is the moment the readings already exist - a second path to the
+        same directory would be a second opinion about what is in it, and this
+        codebase has paid for that mistake before. It is idempotent, so a poll
+        that finds nothing new does nothing at all.
+        """
+        archive = _archive()
+        if archive is None:
+            return {"enabled": False, "error": app.state.archive_error}
+        stored = 0
+        error = ""
+        try:
+            from .archive import harvest as _harvest_mod
+            for stage in stages:
+                stored += _harvest_mod.harvest_stage(archive, stage)
+        except Exception as exc:        # noqa: BLE001
+            # A HARVEST THAT FAILS MUST NOT COST YOU THE DASHBOARD. Watching a
+            # run has never required being able to archive one, and a full disk
+            # is exactly when you most want to still be able to look.
+            error = f"harvest failed: {exc}"
+            diag(f"[seren-theatre] {error}")
+        out = {"enabled": True, "path": str(archive.path), "error": error}
+        try:
+            out["surgeries"] = archive.count("surgeries")
+            out["stored_now"] = stored
+        except Exception as exc:        # noqa: BLE001
+            out["error"] = out["error"] or f"archive unreadable: {exc}"
+        return out
 
     @app.get("/api/state")
     def state() -> dict:
@@ -220,7 +326,184 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
                   for s in cfg.stages]
         return {"generated": t0, "took_ms": round((time.time() - t0) * 1000, 1),
                 "refresh_seconds": cfg.refresh_seconds, "stages": stages,
+                # Reported, never silent. An archive that is off, broken or
+                # full has to say so on the page - a history that quietly
+                # stopped being kept is worse than one that was never started,
+                # because you find out when you go looking for it.
+                "archive": _harvest(stages),
                 "version": APP_VERSION}
+
+    # Backstage needs the same handle, and must not open a second one: two
+    # connections to one sqlite file is how a writer and a reader start
+    # blocking each other on a box with no WAL support.
+    app.state.open_archive = _archive
+
+    @app.get("/api/books")
+    def books_index() -> dict:
+        """The repertoire. A READ route, so a plain viewer has it.
+
+        Import and delete live behind [stagehand] because they write - but
+        looking at the shelf, reading what a book says and handing the zip on
+        are things anybody watching this box should be able to do.
+        """
+        archive = _archive()
+        if archive is None:
+            return {"enabled": False, "error": app.state.archive_error,
+                    "books": []}
+        try:
+            return {"enabled": True, "error": "",
+                    "books": archive.prompt_books()}
+        except Exception as exc:        # noqa: BLE001
+            return {"enabled": True, "error": f"archive unreadable: {exc}",
+                    "books": []}
+
+    @app.get("/api/books/{book_id}")
+    def book_detail(book_id: str) -> dict:
+        """One book, with its recipe and whatever it warns about.
+
+        `executes` is recomputed from the STORED RECIPE rather than read back
+        off the row, so a viewer that learns about a new executable field
+        starts warning about books imported before it knew.
+        """
+        archive = _archive()
+        if archive is None:
+            raise HTTPException(503, app.state.archive_error or "no archive")
+        row = archive.prompt_book(book_id)
+        if row is None:
+            raise HTTPException(404, f"no prompt book {book_id!r}")
+        from .archive import bundle as _bundle
+        row["executes"] = _bundle.executes(row.get("recipe") or "")
+        from .archive import blobs as _blobs
+        store = _blobs.Blobs(cfg.archive.blobs_dir())
+        # PRESENCE, NOT PROMISES, applied to our own blob store. A row whose
+        # bytes are missing is a book you cannot hand on, and saying so is
+        # better than a download that 404s later.
+        row["bytes_present"] = store.has(book_id)
+        return row
+
+    @app.get("/api/books/{book_id}/bundle")
+    def book_bundle(book_id: str):
+        """Hand the zip back out, unchanged, so it can be passed along.
+
+        The bytes are returned verbatim - same file, same hash, so the person
+        you send it to can check it against the one you were given.
+        """
+        archive = _archive()
+        if archive is None:
+            raise HTTPException(503, app.state.archive_error or "no archive")
+        if archive.prompt_book(book_id) is None:
+            raise HTTPException(404, f"no prompt book {book_id!r}")
+        from .archive import blobs as _blobs
+        store = _blobs.Blobs(cfg.archive.blobs_dir())
+        try:
+            path = store.path_for(book_id)
+        except _blobs.BlobError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if not path.is_file():
+            raise HTTPException(
+                410, f"the row for {book_id!r} is here but its bytes are not. "
+                     f"The recipe and the notes are still readable at "
+                     f"/api/books/{book_id}.")
+        from fastapi.responses import FileResponse
+        row = archive.prompt_book(book_id)
+        name = "".join(c for c in str(row.get("name") or "bundle")
+                       if c.isalnum() or c in "._-") or "bundle"
+        return FileResponse(path, media_type="application/zip",
+                            filename=f"{name}.zip")
+
+    @app.get("/api/archive")
+    def archive_index(limit: int = 50, offset: int = 0) -> dict:
+        """Previous Surgeries: runs that happened, with their gradings nested.
+
+        A READ ROUTE, so it exists on a base install - which is the point. The
+        person who most needs the history is the one running a plain viewer
+        against a directory somebody else built in.
+
+        NESTED RATHER THAN FLAT: a grading is meaningless without the build it
+        graded, and a list of scores with no builds beside them is exactly the
+        shape that invites the wrong conclusion.
+        """
+        archive = _archive()
+        if archive is None:
+            return {"enabled": False, "error": app.state.archive_error,
+                    "surgeries": []}
+        try:
+            from .archive import harvest as _harvest_mod
+            rows = archive.surgeries(limit=max(1, min(limit, 500)),
+                                     offset=max(0, offset))
+            # STAT THEM NOW. A stored `rung_present` is a last-known value, and
+            # the row that matters most - the one whose rung was deleted - is
+            # exactly the one no later harvest will ever revisit. See reconcile.
+            rows = _harvest_mod.reconcile(archive, rows)
+            # RE-PROJECT THE STORED DOCUMENTS. The rows carry the ORIGINAL
+            # eval and gate reports; the shape the viewer draws is computed
+            # here, from them, on every read. That is what makes a viewer
+            # upgrade improve rows archived years ago instead of leaving them
+            # frozen in whatever projection was current when they were stored.
+            from . import evalreport as _proj
+            for row in rows:
+                manifest = row.get("manifest") or {}
+                build = str(manifest.get("build_id") or "")
+                for grading in row.get("gradings") or []:
+                    doc = grading.get("report")
+                    if isinstance(doc, dict):
+                        view = _proj.project_eval(doc, build)
+                        # The provenance COLUMN wins: it was decided at harvest
+                        # against the manifest that was on disk then, and that
+                        # is the only moment the question had one honest
+                        # answer. Re-deriving it now would compare against a
+                        # rung that may since have been rebuilt.
+                        view["provenance"] = grading.get("provenance") \
+                            or view["provenance"]
+                        grading["view"] = view
+                gate = (row.get("gate") or {}).get("report")
+                if isinstance(gate, dict):
+                    row["gate"]["view"] = _proj.project_gate(gate)
+            return {"enabled": True, "path": str(archive.path),
+                    "total": archive.count("surgeries"), "error": "",
+                    "surgeries": rows}
+        except Exception as exc:        # noqa: BLE001
+            return {"enabled": True, "error": f"archive unreadable: {exc}",
+                    "surgeries": []}
+
+    @app.get("/api/archive/diff")
+    def archive_diff(a: str, b: str) -> dict:
+        """Two runs side by side, with what a reader may NOT conclude.
+
+        The interesting question the archive exists for - "I changed one knob,
+        did it do anything" - and the answer has to carry its own caveat. See
+        archive/compare.py: attribution counts the INPUTS that changed, because
+        a table showing one knob beside one moved number invites a conclusion
+        that is only warranted when nothing else moved.
+        """
+        archive = _archive()
+        if archive is None:
+            raise HTTPException(503, app.state.archive_error or "no archive")
+        from .archive import compare as _compare
+        from .archive import harvest as _harvest_mod
+        from . import evalreport as _proj
+
+        rows = {}
+        for key in (a, b):
+            found = archive.surgery(key)
+            if found is None:
+                raise HTTPException(404, f"no archived run {key!r}")
+            rows[key] = found
+
+        # Same projection the listing does, so the diff reads the same numbers
+        # the cards do. A second path to "what does this eval say" would be a
+        # second opinion, on screen, in a place nobody is checking.
+        for row in rows.values():
+            build = str((row.get("manifest") or {}).get("build_id") or "")
+            for grading in row.get("gradings") or []:
+                doc = grading.get("report")
+                if isinstance(doc, dict):
+                    view = _proj.project_eval(doc, build)
+                    view["provenance"] = grading.get("provenance") \
+                        or view["provenance"]
+                    grading["view"] = view
+        _harvest_mod.reconcile(archive, list(rows.values()))
+        return _compare.compare(rows[a], rows[b])
 
     @app.get("/viewer", response_class=HTMLResponse)
     def viewer() -> HTMLResponse:

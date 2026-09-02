@@ -269,6 +269,197 @@ body { font-size: 14px; }
 .pb-file-hash .hint { font-size: 10px; letter-spacing: .04em; }
 .pb-file-hash code { margin-left: 5px; }
 
+
+/* -- the right-hand column holds more than one panel now ------------------- */
+/* WRAPPED RATHER THAN AUTO-PLACED, and this is a correctness fix rather than
+   tidying. `.run` declares two columns and nothing else, so a THIRD child
+   auto-flows to row 2 column 1 - underneath the step ladder, in the wide
+   column, which is neither where it belongs nor obviously wrong at a glance.
+   One wrapper is stabler than pinning each panel to a row by hand, because it
+   keeps working when a panel renders empty. */
+.run-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+/* -- results: what the run MEASURED --------------------------------------- */
+/* Same furniture as the playbill because it is the same kind of object - a
+   review panel you read while looking at the ladder. Deliberately NOT the same
+   panel: the playbill asserts inputs and this asserts outputs, and that panel's
+   whole value is that it asserts one thing exactly. */
+.results {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    min-width: 0;
+}
+.results h4 {
+    margin: 0 0 6px; font-size: 11px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted);
+}
+.res-body { max-height: 620px; overflow: auto; }
+.res-block + .res-block { margin-top: 14px; padding-top: 12px;
+                          border-top: 1px solid var(--line); }
+.res-block h5 {
+    margin: 0 0 3px; font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--faint);
+}
+.res-block h5 .badge { text-transform: none; letter-spacing: 0; }
+.res-sub { color: var(--faint); font-size: 11.5px; line-height: 1.45;
+           margin: 4px 0 7px; }
+.res-when { color: var(--faint); font-size: 11.5px; margin-bottom: 10px; }
+
+/* PROVENANCE IS THE LOUDEST THING IN THE PANEL WHEN IT IS STALE. A rebuilt
+   rung keeps its old eval report, and stale numbers rendered plainly are the
+   confidently-wrong failure this whole service exists against. `unknown` is
+   toned down but never hidden - a viewer that cannot tell has to say so. */
+.res-prov { font-size: 11.5px; line-height: 1.45; border-radius: 6px;
+            padding: 6px 8px; margin-bottom: 8px; border: 1px solid transparent; }
+.res-prov.ok { color: var(--faint); }
+.res-prov.stale { color: var(--text); background: rgba(240, 121, 106, .10);
+                  border-color: var(--danger); }
+.res-prov.unknown { color: var(--muted); background: rgba(210, 169, 63, .08);
+                    border-color: rgba(210, 169, 63, .35); }
+
+/* A wide table in a 360px column has to scroll SIDEWAYS inside its own box.
+   Letting it widen the panel would push the step ladder off the screen, and
+   letting it wrap would turn a matrix into confetti. */
+.res-scroll { overflow-x: auto; }
+.res-t { border-collapse: collapse; font-size: 11.5px; width: 100%; }
+.res-t th, .res-t td { padding: 2px 6px; text-align: left; white-space: nowrap; }
+.res-t thead th { color: var(--faint); font-weight: 500; font-size: 10.5px;
+                  border-bottom: 1px solid var(--line); }
+.res-t td { color: var(--muted); }
+.res-t td:first-child { color: var(--text); }
+.res-t td.n, .res-t th.n { text-align: right;
+    font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.res-t tbody tr:hover td { background: rgba(255, 255, 255, .03); }
+/* The diagonal of the cross-domain matrix: an expert against its OWN held-out
+   set. It should be the lowest number in its row, and finding it by counting
+   columns is exactly the friction that stops people checking. */
+.res-t td.own { color: var(--text); background: rgba(88, 166, 255, .10); }
+.res-t tr.nested td:first-child { color: var(--faint); padding-left: 14px; }
+
+.res-note { color: var(--faint); font-size: 11.5px; line-height: 1.5;
+            margin-top: 7px; }
+.res-note.caveat { color: var(--muted); }
+.res-note.bad { color: var(--danger); }
+.res-note ul, .res-findings, .res-unmeasured ul {
+    margin: 4px 0 0; padding-left: 16px;
+}
+.res-findings { color: var(--warn); font-size: 11.5px; line-height: 1.5; }
+/* NOT MEASURED IS NOT A PASS, and it must not look like one. Kept visually
+   apart from findings for the same reason the eval keeps `unmeasurable` out of
+   its denominator: a check that could not run reading as a check that came
+   back clean is the single failure mode all of this exists to prevent. */
+.res-unmeasured {
+    margin-top: 8px; padding: 6px 8px; border-radius: 6px;
+    font-size: 11.5px; line-height: 1.5; color: var(--muted);
+    background: rgba(210, 169, 63, .08);
+    border: 1px solid rgba(210, 169, 63, .35);
+}
+.res-t .warn, .res-note .warn, .res-prov .warn { color: var(--warn); }
+.res-t .good { color: var(--ok); }
+.res-t .none, .res-when .none { color: var(--faint); }
+
+
+/* -- comparing two runs ---------------------------------------------------- */
+/* The verdict is the loudest thing in the panel and that is deliberate: two
+   columns of numbers produce a conclusion in the reader's head whether or not
+   one is warranted, so the sentence saying what may be concluded has to arrive
+   before the tables do. `bad` is reserved for identical inputs with different
+   numbers - which is not a failure, it is a measurement of repeatability, and
+   it is the floor under everything else on the page. */
+.compare {
+    background: var(--bg-2); border: 1px solid var(--run);
+    border-radius: 8px; padding: 10px 12px; margin-bottom: 14px;
+}
+.compare h4 {
+    margin: 0 0 8px; font-size: 11px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted);
+}
+.cmp-heads { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+.cmp-side { font-size: 12px; color: var(--text); }
+.cmp-side b { color: var(--run); margin-right: 4px; }
+.cmp-side .hint { margin-left: 6px; }
+.cmp-verdict {
+    font-size: 12.5px; line-height: 1.55; border-radius: 6px;
+    padding: 8px 10px; margin-bottom: 10px; border: 1px solid var(--line);
+}
+.cmp-verdict.ok   { background: rgba(63, 185, 80, .08);  border-color: rgba(63, 185, 80, .35); }
+.cmp-verdict.warn { background: rgba(210, 169, 63, .08); border-color: rgba(210, 169, 63, .40); }
+.cmp-verdict.bad  { background: rgba(240, 121, 106, .10); border-color: var(--danger); }
+/* Direction is the entire content of a delta column, so it is carried by
+   colour AND by the sign - never by colour alone, which is unreadable for a
+   good number of people and invisible in a screenshot pasted into chat. */
+.delta { font-variant-numeric: tabular-nums; }
+.delta.up   { color: var(--ok); }
+.delta.down { color: var(--danger); }
+.cmp-pick { font-size: 11px; color: var(--faint); margin-left: 8px;
+            cursor: pointer; user-select: none; }
+.cmp-pick input { vertical-align: -1px; margin-right: 3px; }
+.cmp-close { margin-top: 10px; }
+
+/* -- the repertoire -------------------------------------------------------- */
+/* What this box is prepared to perform. The notes block is given real reading
+   width and a quieter ground than the code, because it is the part somebody
+   WROTE for you - "here is what this is for, here is the knob I would move
+   first" - and it is the half a recipe cannot carry. */
+.rep-body-inner { padding: 2px 0; }
+.rep-notes {
+    white-space: pre-wrap;
+    font-size: 12.5px; line-height: 1.55; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px 10px; margin: 8px 0;
+    max-height: 260px; overflow: auto;
+}
+.rep-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
+/* An <a> that has to sit in a row of <button>s without looking like a stray
+   link. Styled from the shell's button rules rather than re-inventing them. */
+.rep-actions .btn {
+    display: inline-block; text-decoration: none; font: inherit;
+    padding: 4px 10px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--panel);
+    color: var(--muted); cursor: pointer;
+}
+.rep-actions .btn:hover { background: var(--panel-2); color: var(--text); }
+.rep-delete { color: var(--danger); }
+/* The recipe itself: a stamped one is ninety-odd lines, so it scrolls in its
+   own box rather than pushing every other book off the screen. Horizontal
+   scroll too - a long `base:` line must not wrap into nonsense. */
+.rep-yaml {
+    margin: 8px 0 0; padding: 8px 10px; border-radius: 6px;
+    background: var(--bg); border: 1px solid var(--line);
+    font: 11.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--muted); max-height: 460px; overflow: auto;
+}
+
+/* -- previous surgeries ---------------------------------------------------- */
+/* Runs that HAPPENED, which is not the same list as runs you can still open.
+   The two badges on each card carry that distinction and it is the reason this
+   list is allowed to sit beside Stages at all: `archived only` means the
+   directory is gone and this row is history, not a thing you can go and look
+   at. Rendered in the danger colour not because it is bad - it is the normal,
+   correct end state of a rung - but because a reader who misses it will go
+   looking for a directory that is not there. */
+.arc-body-inner { padding: 2px 0; }
+.arc-grading + .arc-grading {
+    margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+}
+.arc-grading-head { display: flex; align-items: center; gap: 8px;
+                    flex-wrap: wrap; margin-bottom: 8px; }
+/* A run directory is one long string that needs the whole width. Same bargain
+   as the playbill's defaults paths: breakablePath() emits <wbr> after every
+   separator so there are legal break points to prefer, and this catches a
+   single segment that cannot fit even so. */
+.path {
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--faint); overflow-wrap: anywhere;
+}
+/* The archive's own tables reuse the results panel's furniture, deliberately -
+   an archived grading and a live one are the same object and must not look
+   like two different kinds of thing. What differs is the frame around them. */
+#surgeries .res-block + .res-block { border-top-color: var(--line); }
+#surgeries .res-scroll { max-width: 100%; }
+
 /* -- per-field explanations, disclosed on demand --------------------------- */
 /* The words are the WRITER'S, stamped into the manifest beside `resolved`, so
    an archived run explains itself and the viewer holds no glossary of its own

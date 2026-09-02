@@ -63,6 +63,7 @@ const EXPORT = `
 ;globalThis.__theatre = {
     structuralSignature, breakablePath, pbValue, collectTicks, retick,
     stagesHtml, logsHtml, fmtDur, knobFor, pbBlock,
+    archiveHtml, repHtml, repRecipeHtml, compareHtml,
     get KEPT(){ return KEPT_PLAYBILLS; }, set KEPT(v){ KEPT_PLAYBILLS = v; },
 };
 `;
@@ -387,5 +388,436 @@ assert.ok(hostileKnob.includes('/<wbr>'),
 assert.ok(!adopted.includes('pb-why'),
     'the adoption placeholder carried explanations, so the panel was rebuilt '
     + 'after all and anything the reader had opened has just closed');
+
+
+// ── ⑤ the results panel ─────────────────────────────────────────────────────
+//
+// THE FAILURE THIS SECTION IS AGAINST IS INVISIBLE. The results panel appears
+// only when a re-render happens, and a re-render happens only when the
+// structural signature changes. If an eval landing does not move the
+// signature, the panel never draws and NOTHING says so - the page just goes on
+// showing a finished run with no results, which is indistinguishable from a
+// run that was never evaluated. So both directions get asserted: results
+// arriving must move the signature, and two identical polls must not.
+
+const EVAL = {
+    path: '/r/eval_report.json', schema_version: 1,
+    build_id: '9c1f2a7b', generated: NOW - 3600,
+    provenance: 'matches', ok: true, message: 'measured',
+    dead_experts: [], undiscriminating: ['markdown'],
+    caveats: ['<b>three rows only</b>'], unmeasured: ['csharp: no compiler'],
+    quality: [{ name: 'python', domain: 'py', exact_match: 0.9, rouge1: 0.8,
+                bleu: 0.7, scored: 3, attempted: 20, reasoned: null,
+                status: 'done', note: '', thin: true,
+                in_moe: { name: 'moe/python', domain: 'py', exact_match: 0.4,
+                          rouge1: 0.3, bleu: 0.2, scored: 20, attempted: 20,
+                          reasoned: 0.6, status: 'done', note: '',
+                          thin: false, in_moe: null } }],
+    routing: {
+        status: '', reason: '',
+        experts: [{ name: 'ghost', own_share: 0.001, others_share: 0.001,
+                    enrichment: null, enrichment_reliable: false,
+                    top_competitor: 'python', top_competitor_share: 0.9,
+                    own_is_column_max: false, outranked: true }],
+        excluded: [], named_experts: 2, own_is_max_count: 1,
+        mean_enrichment: 1.02, p_value: 0.5, p_value_event: '',
+        mean_js_bits: 0.0, input_blind: true, moe_layers: 12, top_k: 2,
+        mean_gate_confidence: 0.49, uniform_confidence: 0.5,
+        confidence_ceiling: 0.5, saturated: true,
+        think_segments: {}, think_segment_errors: {} },
+};
+const GATE = {
+    path: '/r/gate_experts.json', status: 'unmeasurable',
+    findings: ['two experts are nearly identical'],
+    unmeasured: ['cross-domain loss: no held-out rows'],
+    divergence: { python: 0.031 }, pairwise: {},
+    cross_loss: { python: { python: 1.2, markdown: 3.4 } }, config_audit: {},
+};
+
+function withResults(shift, over) {
+    const b = board(shift, over);
+    const r = b.stages[0].rungs[0];
+    r.eval = Object.assign({}, EVAL, (over || {}).eval || {});
+    r.gate = GATE;
+    r.eval_error = (over || {}).eval_error || null;
+    r.gate_error = null;
+    return b;
+}
+
+const bare = board(0);
+assert.ok(!T.stagesHtml(bare).includes('class="results"'),
+    'a run with no eval and no gate drew a results panel anyway; a panel that '
+    + 'says "nothing here" on every run teaches its reader to stop looking');
+
+const res = T.stagesHtml(withResults(0));
+assert.ok(res.includes('class="results"'), 'the results panel did not render');
+
+// A SIBLING OF THE PLAYBILL, IN THE SAME COLUMN. Auto-placed into `.run`'s two
+// columns a third child lands under the step ladder instead, which is not
+// obviously wrong at a glance and so would survive review.
+assert.ok(res.includes('<div class="run-side">'),
+    'the right-hand column wrapper is gone; the results panel will auto-place '
+    + 'into row 2 column 1, underneath the ladder');
+assert.ok(res.indexOf('class="playbill"') < res.indexOf('class="results"'),
+    'the results panel must sit under the playbill, not above it');
+
+// Provenance, all three states, because the middle one is the whole point.
+assert.ok(res.includes('res-prov ok'), 'a matching build_id did not say so');
+const staleHtml = T.stagesHtml(withResults(0, {
+    eval: { provenance: 'stale', build_id: 'old11111' } }));
+assert.ok(staleHtml.includes('res-prov stale')
+    && staleHtml.includes('earlier build'),
+    'a stale eval rendered as though it described the model on disk - this is '
+    + 'the C# 0/10 failure in a new coat');
+const unknownHtml = T.stagesHtml(withResults(0, {
+    eval: { provenance: 'unknown', build_id: '' } }));
+assert.ok(unknownHtml.includes('res-prov unknown')
+    && unknownHtml.includes('<b>unknown</b>'),
+    'a viewer that cannot tell which build was graded must say so out loud');
+
+// AN ABSENCE IS NOT A ZERO. `reasoned: null` is "never asked"; 0.00 would read
+// as a model that never once produced a think block.
+assert.ok(res.includes('—'), 'a missing measurement did not render as a dash');
+assert.ok(!res.includes('>0.000<') || res.includes('0.900'),
+    'sanity: the fixture scores should still be present');
+
+// NOISE IS NOT A NUMBER. A starved expert's enrichment must not be printed.
+assert.ok(res.includes('noise') && res.includes('starved'),
+    'an unreliable enrichment was printed as a figure, which invites a reader '
+    + 'to quote the best-looking number in the table');
+
+// The two diagnoses share cannot tell apart, both stated.
+assert.ok(res.includes('INPUT-BLIND'), 'the input-blind verdict is missing');
+assert.ok(res.includes('SATURATED'),
+    'the saturation verdict is missing; at top-k 2 the ceiling is 0.50 and '
+    + '0.49 is saturated - a threshold against 1.0 would never fire');
+
+// NOT MEASURED IS NOT A PASS, and it is kept apart from findings.
+assert.ok(res.includes('res-unmeasured') && res.includes('cross-domain loss'),
+    'the gate\'s unmeasured list is not rendered, so a check that could not '
+    + 'run reads as a check that came back clean');
+assert.ok(res.includes('res-findings'), 'the gate findings are not rendered');
+
+// The matrix diagonal is marked, because finding it by counting columns is
+// exactly the friction that stops anyone checking it.
+assert.ok(res.includes('class="n own"'),
+    'the cross-domain diagonal is not marked');
+
+// Somebody else's text reaches the page ESCAPED. A caveat is free text written
+// by the pipeline and read by a browser.
+assert.ok(!res.includes('<b>three rows only</b>'),
+    'a caveat went to the page unescaped');
+assert.ok(res.includes('&lt;b&gt;three rows only'), 'the caveat was not escaped');
+
+// A document that is present and unreadable is NOT the same as no document,
+// and Backstage already taught this codebase what happens to an error list
+// nothing renders.
+const errHtml = T.stagesHtml(withResults(0, {
+    eval_error: 'eval_report.json: not valid JSON' }));
+assert.ok(errHtml.includes('not valid JSON'),
+    'an unreadable results document was swallowed; that reports the viewer\'s '
+    + 'own failure as a fact about the pipeline');
+
+// -- the signature, both directions ------------------------------------------
+
+assert.notStrictEqual(T.structuralSignature(bare),
+                      T.structuralSignature(withResults(0)),
+    'results arriving did not move the structural signature, so the page will '
+    + 'never re-render and the panel will never appear');
+
+// Two polls a few seconds apart, same results: nothing structural moved. If
+// this fires, something clock-derived leaked into the results payload and the
+// page is now rebuilding itself every five seconds with nothing saying so.
+assert.strictEqual(T.structuralSignature(withResults(0)),
+                   T.structuralSignature(withResults(7)),
+    'the results payload carries a clock-derived field; add it to '
+    + 'CLOCK_DERIVED or send a stamp instead of a duration');
+
+// The age is a TICK, which is what makes the line above safe: the text updates
+// without a re-render, the same way every other elapsed string on the page does.
+const resTicks = T.collectTicks(withResults(0));
+assert.ok([...resTicks.keys()].some((k) => k.startsWith('eval-age:')),
+    'the eval age is not a tick node, so it would freeze at whatever it said '
+    + 'when the panel was drawn');
+
+
+// ── previous surgeries ──────────────────────────────────────────────────────
+//
+// THE ASSERTION THAT MATTERS is the one about `archived only`. Stages shows
+// what is on disk; this shows what was RECORDED, and most of what was recorded
+// no longer exists - that is the whole reason the archive is worth having. A
+// row that renders identically to a live rung would have the viewer assert a
+// directory exists when it does not, which is this codebase's oldest failure
+// wearing its newest costume.
+
+const SURGERY = {
+    run_key: 'abc123', build_id: 'cafe0001', stage: 'Lab',
+    name: 'dryrun_0.5B', rung_path: '/mnt/nvme/fraunkensteinLab/dryrun_0.5B',
+    started: NOW - 90000, finished: NOW - 86400, state: 'finished', ok: 1,
+    rung_present: false,
+    manifest: { build_id: 'cafe0001', name: 'dryrun_0.5B' },
+    gate: { status: 'ok', findings: 0, unmeasured: 1,
+            view: { status: 'ok', findings: [],
+                    unmeasured: ['config audit: no config.json'],
+                    divergence: { python: 0.031 },
+                    cross_loss: { python: { python: 1.2 } } } },
+    gradings: [{
+        grading_key: 'g1', build_id: 'cafe0001', generated: NOW - 80000,
+        provenance: 'matches', ok: 1,
+        view: {
+            provenance: 'matches', build_id: 'cafe0001',
+            generated: NOW - 80000, ok: true, message: 'measured',
+            caveats: [], undiscriminating: [], dead_experts: [],
+            unmeasured: [],
+            quality: [{ name: 'python', exact_match: 0.91, rouge1: 0.8,
+                        bleu: 0.7, scored: 3, attempted: 20, reasoned: 0.62,
+                        status: 'done', thin: true, in_moe: null }],
+            routing: { experts: [], excluded: [], think_segments: {},
+                       think_segment_errors: {} },
+        },
+    }],
+};
+
+function archiveState(over) {
+    return Object.assign({ enabled: true, path: '/x/archive.db', total: 1,
+                           error: '', surgeries: [SURGERY] }, over || {});
+}
+
+const arc = T.archiveHtml(archiveState());
+assert.ok(arc.includes('archived only'),
+    'a run whose directory has been deleted rendered without saying so - the '
+    + 'viewer is now asserting that a rung exists when a stat disagrees');
+assert.ok(arc.includes('dryrun_0.5B'), 'the surgery did not render');
+assert.ok(arc.includes('cafe0001'), 'the build_id is missing');
+
+// The SAME renderers as the live results panel, not a second implementation.
+// Two renderers for one report eventually disagree about what a number means,
+// on screen, somewhere nobody is checking.
+assert.ok(arc.includes('Generation quality'),
+    'the archived grading did not reuse the live quality renderer');
+assert.ok(arc.includes('Expert gate'), 'the archived gate did not render');
+assert.ok(arc.includes('res-unmeasured'),
+    'the gate\'s unmeasured list vanished in the archive, so a check that '
+    + 'could not run reads as one that came back clean');
+
+const onDisk = T.archiveHtml(archiveState({
+    surgeries: [Object.assign({}, SURGERY, { rung_present: true })] }));
+assert.ok(onDisk.includes('on disk') && !onDisk.includes('archived only'),
+    'a surgery whose rung is still there was marked as deleted');
+
+// THREE VERDICTS. `ok: null` is a manifest that never said, and rendering it
+// as a failure would invent a result.
+const noVerdict = T.archiveHtml(archiveState({
+    surgeries: [Object.assign({}, SURGERY, { ok: null })] }));
+assert.ok(noVerdict.includes('no verdict'),
+    'a run with no recorded verdict was given one');
+
+// A run built and never evaluated is not a run that scored zero.
+const unevaluated = T.archiveHtml(archiveState({
+    surgeries: [Object.assign({}, SURGERY, { gradings: [] })] }));
+assert.ok(unevaluated.includes('never evaluated'),
+    'an unevaluated run rendered as an empty space where a table would be');
+
+// OFF AND EMPTY ARE DIFFERENT SENTENCES, and both have to be sayable.
+assert.ok(T.archiveHtml({ enabled: false, error: 'archive: disabled in config' })
+    .includes('not running'), 'a disabled archive said nothing');
+assert.ok(T.archiveHtml(archiveState({ surgeries: [], total: 0 }))
+    .includes('Nothing archived yet'),
+    'an empty archive is indistinguishable from a broken one');
+
+// A stale grading has to be as loud here as it is in the live panel. A
+// historical row is exactly where somebody will misread one.
+const stale = JSON.parse(JSON.stringify(SURGERY));
+stale.gradings[0].view.provenance = 'stale';
+assert.ok(T.archiveHtml(archiveState({ surgeries: [stale] })).includes('stale'),
+    'an archived grading of an earlier build did not say so');
+
+// Free text from a pipeline reaches a browser. Escape it.
+const hostileRun = JSON.parse(JSON.stringify(SURGERY));
+hostileRun.name = '<img src=x onerror=alert(1)>';
+const escaped = T.archiveHtml(archiveState({ surgeries: [hostileRun] }));
+assert.ok(!escaped.includes('<img src=x'), 'a run name went to the page raw');
+
+
+// ── the repertoire ──────────────────────────────────────────────────────────
+//
+// THE WARNING IS THE FEATURE, not the list. A recipe naming an `eval.script`
+// causes somebody else's file to be run with the interpreter, and the moment
+// that has to be visible is when a person opens the book intending to stage
+// it. A shelf that renders beautifully and drops that line is worse than no
+// shelf, because it looks like it checked.
+
+const BOOK = {
+    book_id: 'a'.repeat(64), name: 'Handoff', created: NOW - 200000,
+    imported: NOW - 100000, build_id: 'a4c83291f681', bytes: 3117,
+    notes: '# Gauntlet notes\n\nrouter.epochs is the knob.',
+    meta: { name: 'handoff', build_id: 'a4c83291f681',
+            unpinnable: { use_vllm: false, lr_lora: 0.0002, seed: 42 } },
+};
+
+const rep = T.repHtml({ enabled: true, error: '', books: [BOOK] });
+assert.ok(rep.includes('Handoff'), 'the book did not render');
+assert.ok(rep.includes('a4c83291f681'), 'the build_id is missing');
+assert.ok(rep.includes('router.epochs is the knob'),
+    'the notes are the half a recipe cannot carry, and they were dropped');
+assert.ok(rep.includes('3 settings cannot travel in a recipe'),
+    'the unpinnable count is not shown - somebody would build this expecting '
+    + 'it to match and never be told which knobs followed their own box');
+
+// A bundle that makes no claim has to say so, not show a blank.
+const noClaim = T.repHtml({ enabled: true, books: [
+    Object.assign({}, BOOK, { build_id: '', meta: {} })] });
+assert.ok(noClaim.includes('makes no claim'),
+    'a bundle with no build_id rendered as though it had one');
+
+// Empty and broken are different sentences.
+assert.ok(T.repHtml({ enabled: true, books: [] }).includes('Nothing on the shelf'),
+    'an empty shelf is indistinguishable from a broken one');
+assert.ok(T.repHtml({ enabled: false, error: 'archive: disabled in config' })
+    .includes('nowhere to keep prompt books'), 'a disabled archive said nothing');
+
+// THE ONE THAT MATTERS. Executable content, in front of a person.
+const danger = T.repRecipeHtml({
+    recipe: 'name: x\n', bytes_present: true,
+    executes: ["eval.script = './their_grader.py'"] });
+assert.ok(danger.includes('This recipe runs code'),
+    'a recipe that executes somebody else\'s script opened without a word');
+assert.ok(danger.includes('their_grader.py'), 'the warning did not name the file');
+
+const safe = T.repRecipeHtml({ recipe: 'name: x\n', bytes_present: true,
+                               executes: [] });
+assert.ok(!safe.includes('This recipe runs code'),
+    'every recipe was flagged, which is how a warning stops being read');
+
+// A row whose bytes are gone can still be read, and says it cannot be passed on.
+assert.ok(T.repRecipeHtml({ recipe: 'name: x\n', bytes_present: false,
+                            executes: [] }).includes('bytes are not'),
+    'a book with no blob offered a download that would 404');
+
+// Somebody else's file, somebody else's YAML. Both reach a browser.
+const hostileBook = T.repHtml({ enabled: true, books: [
+    Object.assign({}, BOOK, { name: '<img src=x onerror=alert(1)>',
+                              notes: '<script>alert(2)</script>' })] });
+assert.ok(!hostileBook.includes('<img src=x'), 'a book name went to the page raw');
+assert.ok(!hostileBook.includes('<script>alert(2)'), 'notes went to the page raw');
+assert.ok(T.repRecipeHtml({ recipe: '<script>alert(3)</script>',
+                            bytes_present: true, executes: [] })
+    .includes('&lt;script&gt;'), 'the recipe body was not escaped');
+
+
+// ── comparing two runs ──────────────────────────────────────────────────────
+//
+// THE VERDICT IS THE THING UNDER TEST, not the tables. Two columns of numbers
+// generate a conclusion in the reader whether or not one is warranted, so the
+// sentence saying what may be concluded is the load-bearing part of the panel
+// - and a rendering that dropped it would still look completely fine.
+
+function diff(over) {
+    const base = {
+        a: { run_key: 'a1', name: 'dryrun_a', build_id: 'aaa1', started: NOW - 9000,
+             rung_present: true },
+        b: { run_key: 'b2', name: 'dryrun_b', build_id: 'bbb2', started: NOW - 3000,
+             rung_present: false },
+        config: { inputs: [], consequences: [], only_in_a: [], only_in_b: [],
+                  unchanged: 74, has_glossary: true },
+        attribution: 'none', incomparable_because: [], nondeterminism: false,
+        same_build: false,
+        outcome: { a_evaluated: true, b_evaluated: true, routing: [],
+                   quality: [], headline: [] },
+    };
+    return Object.assign(base, over || {});
+}
+
+const ONE = diff({
+    attribution: 'single',
+    config: { inputs: [{ field: 'router_epochs', a: 3, b: 8,
+                         knob: { summary: 'Passes over the router mix.',
+                                 derived_from: null } }],
+              consequences: [{ field: 'collect_token_target', a: 100, b: 250,
+                               knob: null }],
+              only_in_a: [], only_in_b: [], unchanged: 73, has_glossary: true },
+    outcome: { a_evaluated: true, b_evaluated: true,
+               headline: [{ label: 'mean enrichment', a: 1.02, b: 2.14,
+                            delta: 1.12 }],
+               routing: [{ name: 'python', a: 1.02, b: 2.14, delta: 1.12,
+                           reliable: true }],
+               quality: [{ name: 'python', thin: false,
+                           exact_match: { a: 0.9, b: 0.9, delta: 0 },
+                           rouge1: { a: 0.8, b: 0.8, delta: 0 },
+                           bleu: { a: 0.7, b: 0.7, delta: 0 },
+                           reasoned: { a: 0.11, b: 0.62, delta: 0.51 } }] },
+});
+
+const one = T.compareHtml(ONE);
+assert.ok(one.includes('One input changed'), 'the single-variable verdict is missing');
+assert.ok(one.includes('router_epochs'), 'the changed field is not named');
+assert.ok(one.includes('evidence rather than proof'),
+    'a single changed input was presented as proof; a seed and a corpus draw '
+    + 'move underneath every run and the panel has to say so');
+assert.ok(one.includes('derived value') && one.includes('followed'),
+    'the consequence was not distinguished from the decision');
+assert.ok(one.includes('Values that followed'),
+    'derived values are not in their own block, so one decision reads as two');
+// Direction carried by the SIGN, not only by colour - unreadable otherwise for
+// a good number of people, and invisible in a screenshot pasted into chat.
+assert.ok(one.includes('+1.12'), 'the delta lost its sign');
+assert.ok(one.includes('+0.51'), 'the reasoned delta lost its sign');
+
+const many = T.compareHtml(diff({
+    attribution: 'multiple',
+    config: { inputs: [{ field: 'router_epochs', a: 3, b: 8, knob: null },
+                       { field: 'lora_r', a: 16, b: 32, knob: null }],
+              consequences: [], only_in_a: [], only_in_b: [], unchanged: 72,
+              has_glossary: true },
+}));
+assert.ok(many.includes('Nothing here tells you which one'),
+    'several inputs changed and the panel did not refuse to attribute - which '
+    + 'makes it a confidently-wrong claim generator with a nice table');
+assert.ok(many.includes('2 inputs changed'), 'the count is missing');
+
+// THE LOUD ONE. Identical inputs, moved numbers: a measurement of how
+// repeatable the pipeline is, and the floor under every other comparison.
+const nondet = T.compareHtml(diff({
+    nondeterminism: true, same_build: true,
+    outcome: { a_evaluated: true, b_evaluated: true, routing: [], quality: [],
+               headline: [{ label: 'mean enrichment', a: 1.02, b: 1.47,
+                            delta: 0.45 }] },
+}));
+assert.ok(nondet.includes('Same configuration, different'),
+    'identical inputs with different numbers passed without comment - that is '
+    + 'the most valuable finding this panel can make');
+assert.ok(nondet.includes('cmp-verdict bad'), 'the loud case was rendered quietly');
+
+assert.ok(T.compareHtml(diff({ attribution: 'none', same_build: true }))
+    .includes('Identical configuration'), 'a matching pair said nothing');
+
+// Two different experiments must not look like a controlled comparison.
+assert.ok(T.compareHtml(diff({ incomparable_because: ["size: '0.5B' vs '7B'"] }))
+    .includes('two different'),
+    'a 0.5B against a 7B rendered as though it were one experiment');
+
+// An older manifest cannot split decisions from consequences, and says so.
+assert.ok(T.compareHtml(diff({ config: { inputs: [], consequences: [],
+        only_in_a: [], only_in_b: [], unchanged: 70, has_glossary: false } }))
+    .includes('no knob glossary'),
+    'a manifest with no glossary presented a split it could not make');
+
+// No numbers is not numbers that did not move.
+assert.ok(T.compareHtml(diff({ outcome: { a_evaluated: true,
+        b_evaluated: false, routing: [], quality: [], headline: [] } }))
+    .includes('B was never evaluated'),
+    'an unevaluated run rendered as a run whose numbers stayed put');
+
+// A delta between two noises has no referent and must not be the best-looking
+// figure in the table.
+assert.ok(T.compareHtml(diff({ outcome: { a_evaluated: true, b_evaluated: true,
+        quality: [], headline: [],
+        routing: [{ name: 'ghost', a: 2.15, b: 0.98, delta: -1.17,
+                    reliable: false }] } })).includes('starved on one side'),
+    'a delta between two starved experts was printed as a result');
+
+assert.ok(!T.compareHtml(diff({ a: { run_key: 'x', name: '<img src=x>',
+        build_id: '', rung_present: true } })).includes('<img src=x'),
+    'a run name went to the compare panel raw');
 
 console.log('viewer probe OK');
