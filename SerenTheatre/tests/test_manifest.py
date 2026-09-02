@@ -283,6 +283,70 @@ def test_a_key_this_reader_does_know_never_lands_in_extra(tmp_path):
     assert mf.read(tmp_path).extra == {}
 
 
+# -- the glossary that makes the playbill readable ---------------------------
+#
+# `knobs` explains `resolved` field by field, and it is stamped into the
+# manifest rather than looked up, because a base seren-theatre install has no
+# ms-moe-maker to ask and an archived run still has to explain itself. This
+# reader's whole job is to carry it; WHICH entries are usable is one decision
+# in the viewer (knobFor, pinned in tests/viewer_probe.js), not two here.
+
+KNOBS = {
+    "target_steps": {"summary": "How many optimiser steps each specialist runs.",
+                     "derived_from": None},
+    "collect_token_target": {"summary": "How many raw tokens to collect.",
+                             "derived_from": "target_steps x tokens_per_step"},
+}
+
+
+def test_the_knob_glossary_is_carried(tmp_path):
+    write(tmp_path, minimal(resolved=RESOLVED, knobs=KNOBS))
+    assert mf.read(tmp_path).knobs == KNOBS
+
+
+def test_an_absent_glossary_reads_as_empty_not_as_missing(tmp_path):
+    """Every writer older than the glossary stamps none of it, and that is a
+    run whose playbill carries no explanations - not an error."""
+    write(tmp_path, minimal(resolved=RESOLVED))
+    assert mf.read(tmp_path).knobs == {}
+
+
+@pytest.mark.parametrize("bad", ["a string", 12, ["a", "list"], None, True])
+def test_a_glossary_of_the_wrong_type_reads_as_empty(tmp_path, bad):
+    """Lenient in the same direction as everything else here. A malformed
+    glossary costs the reader some question marks; raising would cost them the
+    run."""
+    write(tmp_path, minimal(resolved=RESOLVED, knobs=bad))
+    assert mf.read(tmp_path).knobs == {}
+
+
+def test_an_entry_with_no_summary_is_carried_rather_than_dropped(tmp_path):
+    """The contract says an entry with no summary renders no affordance - and
+    RENDERS is the operative word. Dropping it here would make a writer's
+    coverage gap invisible on /api/state as well as on screen, which is the
+    silence this pair of packages keeps having to fix."""
+    ragged = {"a": {"summary": "", "derived_from": "x + y"},
+              "b": {"derived_from": "x + y"},
+              "c": "not an object at all"}
+    write(tmp_path, minimal(resolved=RESOLVED, knobs=ragged))
+    assert mf.read(tmp_path).knobs == ragged
+
+
+def test_the_glossary_never_lands_in_extra(tmp_path):
+    """A key this reader knows must not be duplicated into the catch-all;
+    a duplicate is how two readings of one field start to disagree."""
+    write(tmp_path, minimal(resolved=RESOLVED, knobs=KNOBS))
+    assert mf.read(tmp_path).extra == {}
+
+
+def test_as_dict_serves_the_glossary(tmp_path):
+    """Carried is not the same as served - a field parsed into the dataclass
+    and left out of as_dict is invisible to the room and to anything scripting
+    /api/state, which is the same silence one layer further on."""
+    write(tmp_path, minimal(resolved=RESOLVED, knobs=KNOBS))
+    assert mf.as_dict(mf.read(tmp_path))["knobs"] == KNOBS
+
+
 def test_as_dict_serves_the_playbill_and_the_catch_all(tmp_path):
     write(tmp_path, minimal(build_id="abc123def456", resolved=RESOLVED,
                             quantiser="q4_k_m"))

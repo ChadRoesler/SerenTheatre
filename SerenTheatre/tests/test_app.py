@@ -272,6 +272,27 @@ def test_the_viewer_pack_behaves_under_a_shimmed_dom():
     assert out.returncode == 0, out.stderr or out.stdout
 
 
+def test_the_viewer_reads_the_same_knob_entry_keys_the_format_declares():
+    """The third end of the glossary, and the only one not pinned elsewhere.
+
+    manifest.py carries a knobs entry verbatim and never looks inside it, so
+    the names of the keys INSIDE an entry are used in exactly two places: the
+    writer, and scripts.js. test_manifest_contract.py pins the writer against
+    the constants; this pins the viewer against the same two, so a rename
+    cannot leave the room silently drawing question marks that open onto
+    nothing.
+    """
+    from seren_theatre import manifest as mf
+
+    js = (PACK / "scripts.js").read_text(encoding="utf-8")
+    for name in (mf.KNOB_SUMMARY, mf.KNOB_DERIVED_FROM):
+        assert f".{name}" in js, (
+            f"manifest.py declares {name!r} as part of a knobs entry and the "
+            f"viewer never reads it. Either the format moved and scripts.js "
+            f"did not, or the viewer has invented a third spelling - both "
+            f"render as a `?` that explains nothing.")
+
+
 def test_the_room_still_knows_which_fields_come_from_the_clock():
     """The exclusion list is the whole mechanism, and forgetting to extend it
     is INVISIBLE: the signature stops matching, the page goes quietly back to

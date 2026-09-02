@@ -62,7 +62,7 @@ assert.ok(!src.includes('\r'), 'scripts.js has a CR in it; this repo is LF');
 const EXPORT = `
 ;globalThis.__theatre = {
     structuralSignature, breakablePath, pbValue, collectTicks, retick,
-    stagesHtml, logsHtml, fmtDur,
+    stagesHtml, logsHtml, fmtDur, knobFor, pbBlock,
     get KEPT(){ return KEPT_PLAYBILLS; }, set KEPT(v){ KEPT_PLAYBILLS = v; },
 };
 `;
@@ -148,6 +148,23 @@ function board(shift, over) {
                     defaults_files: {
                         '/mnt/nvme/msMoEMaker/lib/python3.12/site-packages/ms_moe_maker/assets/defaults.yaml':
                             '3f0e3b6c1432',
+                    },
+                    // THE WRITER'S GLOSSARY, keyed to the same names as
+                    // `resolved` above and deliberately RAGGED: prose with no
+                    // formula, prose with one, a blank summary, an entry that
+                    // is not an object at all, and a knob naming a field this
+                    // run never resolved. Every case the contract calls out,
+                    // so the affordance rule is asserted against the shape a
+                    // real writer will eventually emit rather than the happy
+                    // one.
+                    knobs: {
+                        size: { summary: 'Parameter count of the base model.',
+                                derived_from: null },
+                        optim: { summary: 'Which optimiser the fine-tune uses.',
+                                 derived_from: 'steps x tokens / headroom' },
+                        base: { summary: '   ', derived_from: 'a x b' },
+                        expert_names: 'not an object',
+                        lora_r: { summary: 'A field this run never resolved.' },
                     },
                     extra: {},
                     stages: [
@@ -297,5 +314,78 @@ assert.ok(html.includes('artifacts written'),
     'the rung-directory reading renders as "artifacts wrote", which is not a '
     + 'sentence about a directory');
 assert.ok(!html.includes('artifacts wrote'), 'the generic phrasing leaked out');
+
+// -- (5) the per-field explanations ------------------------------------------
+//
+// The rendered LOOK of these is eyeballed; what is checked here is the rule
+// that decides they exist at all, which is the half with a silent failure
+// mode - a `?` on every row, opening onto nothing, looks like a finished
+// feature and is the opposite of one.
+
+// ONLY WHERE CONTENT EXISTS. Four fields are resolved; two of them carry a
+// usable summary. The blank one, the malformed one and the knob for a field
+// this run never resolved must all render nothing whatsoever.
+assert.strictEqual((html.match(/class="pb-why"/g) || []).length, 2,
+    'the playbill drew an affordance for a field with no usable summary, or '
+    + 'dropped one for a field that has words - either way the writer\'s '
+    + 'coverage is no longer what is on screen');
+assert.ok(html.includes('what is size?') && html.includes('what is optim?'),
+    'a field with a summary got no explanation');
+assert.ok(!html.includes('what is base?'),
+    'a whitespace-only summary still drew a ? that opens onto nothing');
+assert.ok(!html.includes('what is expert_names?'),
+    'an entry that is not an object at all still drew a ?');
+assert.ok(!html.includes('what is lora_r?'),
+    'a knob naming a field this run never resolved was rendered anyway');
+
+// DERIVED_FROM IS SET APART. One of the two has a formula; the other must not
+// grow an empty labelled line.
+assert.strictEqual((html.match(/pb-why-derived/g) || []).length, 1,
+    'the derived-from line is drawn for a field that has no formula, or '
+    + 'missing from the one that does');
+assert.ok(html.includes('>derived from<'),
+    'the formula is unlabelled, so it reads as more prose');
+assert.ok(html.includes('steps x tokens /<wbr> headroom'),
+    'the formula is not being given break opportunities, so a long one can '
+    + 'push the panel wider than its column');
+
+// REACHABLE WITHOUT A MOUSE. A native disclosure, not a hover tooltip.
+assert.ok(html.includes('<dd class="pb-why"><details>'),
+    'the explanation is not a <details>, so it is hover-only or script-only');
+assert.ok(html.includes('<summary>'), 'the disclosure has no summary to focus');
+
+// The rule itself, at the boundaries the contract names.
+assert.strictEqual(T.knobFor(undefined, 'x'), null, 'no glossary at all');
+assert.strictEqual(T.knobFor({}, 'x'), null, 'a field absent from the glossary');
+assert.strictEqual(T.knobFor({ x: {} }, 'x'), null, 'an entry with no summary');
+assert.strictEqual(T.knobFor({ x: { summary: '   ' } }, 'x'), null,
+    'a whitespace-only summary counted as content');
+assert.strictEqual(T.knobFor({ x: { derived_from: 'a x b' } }, 'x'), null,
+    'a formula with no prose drew an affordance; the contract says the '
+    + 'summary is what decides');
+assert.strictEqual(T.knobFor({ x: 'a string' }, 'x'), null, 'a scalar entry');
+assert.strictEqual(T.knobFor({ x: ['a'] }, 'x'), null, 'an array entry');
+assert.strictEqual(T.knobFor('not a mapping', 'x'), null, 'a scalar glossary');
+assert.deepStrictEqual(
+    T.knobFor({ x: { summary: ' s ', derived_from: 42 } }, 'x'),
+    { summary: 's', derived_from: '' },
+    'a derived_from of the wrong type must read as absent, not as "42"');
+
+// Somebody else's document reaches the page ESCAPED. Both halves, because the
+// wrong order shows up either as visible markup or as an injection.
+const hostileKnob = T.pbBlock('g', ['k'], { k: 1 }, {
+    k: { summary: '<script>alert(1)</script>', derived_from: 'a/<b>' } });
+assert.ok(!hostileKnob.includes('<script>'),
+    'a knob summary went to the page unescaped');
+assert.ok(hostileKnob.includes('&lt;script&gt;'), 'the summary was not escaped');
+assert.ok(hostileKnob.includes('&lt;b&gt;'), 'the formula was not escaped');
+assert.ok(hostileKnob.includes('/<wbr>'),
+    'the formula lost its break opportunity to the escaping');
+
+// (2) again: the explanations are inside the no-re-render skip, so an adopted
+// panel is a bare placeholder and the OPEN ones on screen are the live nodes.
+assert.ok(!adopted.includes('pb-why'),
+    'the adoption placeholder carried explanations, so the panel was rebuilt '
+    + 'after all and anything the reader had opened has just closed');
 
 console.log('viewer probe OK');

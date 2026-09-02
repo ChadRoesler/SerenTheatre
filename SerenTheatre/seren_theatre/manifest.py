@@ -78,8 +78,24 @@ COMPLETE = (DONE, SKIPPED)
 KNOWN_KEYS = frozenset({
     "schema_version", "recipe_id", "name", "size", "base", "experts",
     "started", "updated", "finished", "ok", "stages", "refusals",
-    "build_id", "resolved", "defaults_files",
+    "build_id", "resolved", "defaults_files", "knobs",
 })
+
+# THE TWO KEYS INSIDE A `knobs` ENTRY, named here beside the rest of the wire
+# format because that is what they are. This reader carries the mapping
+# verbatim and never looks inside an entry - the VIEWER does, and a name that
+# lives in only one of two implementations is the shape every drift between
+# these packages has had. Pinned against the writer in
+# tests/test_manifest_contract.py and against scripts.js in tests/test_app.py.
+#
+#   summary       prose: what this field is
+#   derived_from  the expression it was computed from, or absent/None for a
+#                 field somebody typed. A DIFFERENT KIND OF FACT from the
+#                 prose, and the more valuable one for a reader staring at a
+#                 number nobody entered - so the viewer renders it apart
+#                 rather than folded in.
+KNOB_SUMMARY = "summary"
+KNOB_DERIVED_FROM = "derived_from"
 
 
 class UnreadableManifest(Exception):
@@ -146,6 +162,21 @@ class Manifest:
     build_id: str = ""
     resolved: Dict[str, Any] = field(default_factory=dict)
     defaults_files: Dict[str, str] = field(default_factory=dict)
+    # THE GLOSSARY FOR `resolved`, keyed to the same field names:
+    # {field: {"summary": str, "derived_from": str | None}}.
+    #
+    # WHY IT TRAVELS IN THE DOCUMENT rather than being asked for. A base
+    # seren-theatre install has no ms-moe-maker in it - Theatre's `requires` is
+    # empty on purpose - so there is no live tool to ask what a field means,
+    # and a run archived last year has to explain itself anyway. Stamping it
+    # beside `resolved` also means the two packages cannot drift on it: the
+    # words arrive with the values they describe.
+    #
+    # CARRIED VERBATIM, deliberately. This reader does not decide which
+    # entries are usable - that is one rendering decision in one place in the
+    # viewer (knobFor), and a reader that quietly dropped a malformed entry
+    # would hide a writer's coverage gap instead of showing it.
+    knobs: Dict[str, Any] = field(default_factory=dict)
     # Everything a newer writer emits that this reader has never heard of.
     # Carried, not dropped. See KNOWN_KEYS for why this exists at all.
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -262,6 +293,10 @@ def read(run_dir: Path) -> Optional[Manifest]:
         resolved=_mapping(raw.get("resolved")),
         defaults_files={str(k): str(v)
                         for k, v in _mapping(raw.get("defaults_files")).items()},
+        # Same leniency, same direction: a `knobs` that is a string is a writer
+        # bug, and a playbill with no `?` on it is a far smaller failure than
+        # refusing to show the run.
+        knobs=_mapping(raw.get("knobs")),
         extra={k: v for k, v in raw.items() if k not in KNOWN_KEYS},
     )
 
@@ -308,6 +343,9 @@ def as_dict(manifest: Manifest) -> Dict[str, Any]:
         "build_id": manifest.build_id,
         "resolved": manifest.resolved,
         "defaults_files": manifest.defaults_files,
+        # The words for the values above. Served whether or not the viewer has
+        # anything to do with them, for the same reason `extra` is.
+        "knobs": manifest.knobs,
         # Unrendered, deliberately present. A field this viewer has never heard
         # of should be VISIBLE on /api/state the day it starts being written,
         # not discovered a release later by whoever notices the gap.

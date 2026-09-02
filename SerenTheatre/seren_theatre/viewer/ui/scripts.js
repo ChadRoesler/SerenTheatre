@@ -167,6 +167,14 @@ function retick(state) {
 // Keyed by rung path AND build_id, not build_id alone: two stages can be
 // running the same recipe, and one panel being adopted into the other's slot
 // would leave the second empty.
+//
+// `knobs` LIVES INSIDE THIS SKIP TOO, and belongs there for the same reason
+// rather than by convenience: the glossary describes `resolved`, is stamped
+// once beside it, and is immutable for exactly as long as build_id is. So the
+// explanations are built when the panel is built and never again - and because
+// the live <aside> is MOVED rather than re-created, an explanation the reader
+// opened stays open across a poll, the same way .pb-body's scrollTop does.
+// Nothing in an explanation is clock-derived, so there is no tick to keep up.
 let KEPT_PLAYBILLS = new Set();
 
 function showError(html) { $('error-slot').innerHTML = `<div class="err">${html}</div>`; }
@@ -493,9 +501,80 @@ function pbValue(v) {
     return escapeHtml(s);
 }
 
-function pbBlock(label, keys, res) {
+// WHETHER A ROW GETS A `?`. The only place that decides it, and it decides it
+// on CONTENT rather than on a field's existence.
+//
+// THE GLOSSARY IS THE WRITER'S. `knobs` is stamped into the manifest beside
+// `resolved`, keyed to the same field names, and nothing in this file knows
+// what any field means. That is not fastidiousness: a base seren-theatre
+// install has no ms-moe-maker in it at all, so there is no live tool to ask,
+// and a run archived last year still has to explain itself. A sentence about
+// `lora_r` living here would also be a fifth way these two packages can drift,
+// and the four before it were all silent ones.
+//
+// NO SUMMARY, NO AFFORDANCE. A `?` that opens onto nothing is worse than no `?`
+// at all, and drawing it only where there are words makes a writer's coverage
+// gap VISIBLE instead of turning it into seventy-five empty boxes. Same
+// discipline as `source: "manifest" | "disk"` elsewhere in this room: show
+// which reading you actually got.
+//
+// DEFENSIVE ABOUT THE ENTRY, because this is somebody else's document. An
+// entry that is a bare string, or an array, or carries a formula and no prose,
+// is a writer bug - and the answer to a writer bug is a row with no question
+// mark on it, never a playbill that fails to draw.
+function knobFor(knobs, key) {
+    const entry = (knobs && typeof knobs === 'object') ? knobs[key] : null;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const summary = typeof entry.summary === 'string' ? entry.summary.trim() : '';
+    if (!summary) return null;
+    const derived = typeof entry.derived_from === 'string'
+        ? entry.derived_from.trim() : '';
+    return { summary, derived_from: derived };
+}
+
+// THE EXPLANATION IS A SECOND <dd>, SPANNING BOTH COLUMNS.
+//
+// A <dl> may carry several <dd>s under one <dt>, so this is a legal row rather
+// than a foreign element smuggled into the grid, and `grid-column: 1 / -1` in
+// the CSS then gives it the width of the whole panel. Left in the 58% value
+// cell a sentence would have had the same nowhere-to-go problem that broke the
+// defaults paths four characters at a time.
+//
+// <details>, NOT A TOOLTIP. Hover cannot be reached from a keyboard and does
+// not exist on a touch screen, and `title` alone is a floor rather than an
+// answer - it is unreadable on a phone and unreachable by tab. A native
+// disclosure is focusable, opens on Enter or Space, is announced as a
+// disclosure, and needs no script at all, which is also what lets it survive
+// the panel being lifted out and put back on a poll.
+//
+// THE `?` IS NOT A NAME. It is a glyph, so it is hidden from the accessibility
+// tree and the control is named by text only a screen reader gets - "what is
+// collect_token_target?" - rather than by seventy-five buttons all called "?".
+//
+// DERIVED_FROM IS SET APART, never appended to the prose. "What is this" and
+// "where did 14,745,600 come from" are different questions, and the second is
+// the one the reader stares at, because it is the number nobody typed. So it
+// gets its own labelled line, in monospace, as a formula rather than a
+// sentence - and through breakablePath, because a formula can carry a `/` and
+// this panel is 360px wide.
+function pbWhy(key, knob) {
+    if (!knob) return '';
+    const derived = knob.derived_from
+        ? `<div class="pb-why-derived"><span class="hint">derived from</span>`
+          + `<code>${breakablePath(knob.derived_from)}</code></div>`
+        : '';
+    return `<dd class="pb-why"><details>`
+        + `<summary><span aria-hidden="true">?</span>`
+        + `<span class="vh">what is ${escapeHtml(key)}?</span></summary>`
+        + `<div class="pb-why-body"><div class="pb-why-sum">${
+            escapeHtml(knob.summary)}</div>${derived}</div>`
+        + `</details></dd>`;
+}
+
+function pbBlock(label, keys, res, knobs) {
     return `<div class="pb-group"><h5>${escapeHtml(label)}</h5><dl class="kv">`
-        + keys.map((k) => `<dt>${escapeHtml(k)}</dt><dd>${pbValue(res[k])}</dd>`)
+        + keys.map((k) => `<dt>${escapeHtml(k)}</dt><dd>${pbValue(res[k])}</dd>`
+                          + pbWhy(k, knobFor(knobs, k)))
               .join('')
         + `</dl></div>`;
 }
@@ -514,6 +593,10 @@ function renderPlaybill(m, rungPath) {
     if (TICKS) return '';
     const res = m.resolved || {};
     const keys = Object.keys(res);
+    // The writer's words for those values, keyed the same way. Absent on every
+    // manifest older than the glossary, which renders as a playbill with no
+    // question marks on it - a reading, not a failure.
+    const knobs = m.knobs || {};
     const files = m.defaults_files || {};
     const fkeys = Object.keys(files);
     if (!keys.length && !fkeys.length && !m.build_id) {
@@ -529,10 +612,12 @@ function renderPlaybill(m, rungPath) {
         const mine = keys.filter((k) => !taken.has(k)
             && (exacts.includes(k) || prefixes.some((p) => k.startsWith(p))));
         mine.forEach((k) => taken.add(k));
-        return mine.length ? pbBlock(label, mine, res) : '';
+        return mine.length ? pbBlock(label, mine, res, knobs) : '';
     }).join('');
     const rest = keys.filter((k) => !taken.has(k));
-    const other = rest.length ? pbBlock('other', rest, res) : '';
+    // "other" gets explanations too - a field the viewer has never been taught
+    // to group is exactly the field a reader has never seen before.
+    const other = rest.length ? pbBlock('other', rest, res, knobs) : '';
     // The short hash beside each defaults file is the point of showing them at
     // all: it says WHICH version of that file this run inherited, which the
     // path alone cannot, because the file has probably been edited since.
