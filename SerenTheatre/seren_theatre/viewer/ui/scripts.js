@@ -665,6 +665,328 @@ function renderPlaybill(m, rungPath) {
     </aside>`;
 }
 
+// ⑤ THE RESULTS - what a finished run MEASURED, as opposed to what it was told.
+//
+// A SIBLING OF THE PLAYBILL, NOT A SECTION INSIDE IT, and the separation is a
+// claim rather than a layout preference. The playbill's own note says it is
+// "the fingerprinted config: the values that decide what this build produces".
+// That panel is worth having precisely because it asserts ONE thing exactly;
+// filing measurements under a heading that promises inputs blurs the only
+// property it has.
+//
+// There is also a mechanical reason, and it would have bitten silently. The
+// playbill is keyed on build_id and ADOPTED rather than rebuilt for the whole
+// life of a run - that is what stops the scroll jumping every five seconds.
+// build_id is the digest of the resolved config, stamped once at build start.
+// An eval runs AFTER the build, so build_id never changes when its results
+// land: an eval block inside the playbill would be built once, before the eval
+// existed, and then never rebuilt. It would read "not evaluated" forever, and
+// only a hard refresh would ever say otherwise.
+//
+// This panel is outside that skip, so it redraws with everything else.
+
+function num(v, dp) {
+    // A MISSING MEASUREMENT IS NOT A ZERO. 0.000 is a result; an em dash is
+    // the absence of one, and the whole reason this reader keeps `unmeasurable`
+    // apart from `fail` is that the two must never share a rendering.
+    return (v === null || v === undefined) ? '<span class="none">—</span>'
+        : escapeHtml(Number(v).toFixed(dp === undefined ? 3 : dp));
+}
+
+// Did this eval measure the model that is on disk NOW?
+//
+// THE STALE CASE IS THE ENTIRE POINT OF THIS BLOCK. A rebuilt rung keeps its
+// old eval report: valid JSON, confident numbers, about a model that no longer
+// exists. Shown without a word it is the C# 0/10 failure wearing a new coat -
+// nothing looks wrong, and the reader concludes something about a thing that
+// was never measured. `unknown` gets said out loud too, because a viewer that
+// cannot tell must not round itself up to "yes".
+function resProvenance(ev) {
+    if (ev.provenance === 'matches') {
+        return `<div class="res-prov ok">Measured against
+            <code>${escapeHtml(ev.build_id)}</code> — the build described by the
+            playbill.</div>`;
+    }
+    if (ev.provenance === 'stale') {
+        return `<div class="res-prov stale"><b>These numbers are about an
+            earlier build.</b> The eval graded
+            <code>${escapeHtml(ev.build_id)}</code>; this rung now holds a
+            different one. Nothing here is wrong — it is simply not about
+            what is on disk. Re-run <code>eval</code> to replace it.</div>`;
+    }
+    return `<div class="res-prov unknown">Which build this graded is
+        <b>unknown</b> — one side did not stamp a <code>build_id</code>. That is
+        not evidence that it matches, and not evidence that it does not.</div>`;
+}
+
+// The gate: was there ever anything here to route on?
+//
+// BEFORE THE EVAL, deliberately, mirroring the CLI's own ordering and for the
+// reason it gives: reading "1.00x enrichment" first sends you to the router,
+// and reading "the experts are interchangeable" first does not. It is the
+// question the routing table makes you ask, so it goes above it.
+function resGate(g) {
+    if (!g) return '';
+    const div = g.divergence || {};
+    const names = Object.keys(div).sort();
+    const rows = names.length
+        ? `<table class="res-t"><thead><tr><th>expert</th>
+             <th class="n">divergence from base</th></tr></thead><tbody>${
+            names.map((k) => `<tr><td>${escapeHtml(k)}</td>
+                <td class="n">${num(div[k], 4)}</td></tr>`).join('')
+           }</tbody></table>`
+        : '';
+    // CROSS-DOMAIN LOSS IS A MATRIX and reads as one: a row per expert, a
+    // column per held-out domain. The diagonal should be the smallest number
+    // in its row - an expert that scores its OWN domain worse than a sibling's
+    // is the finding, and a flat list of numbers hides it completely.
+    const cl = g.cross_loss || {};
+    const rn = Object.keys(cl).sort();
+    const cn = [...new Set(rn.flatMap((r) => Object.keys(cl[r] || {})))].sort();
+    const matrix = (rn.length && cn.length)
+        ? `<div class="res-sub">cross-domain loss — each expert against every
+             held-out set. The <b>diagonal</b> should be the lowest number in
+             its row.</div>
+           <div class="res-scroll"><table class="res-t"><thead><tr><th></th>${
+            cn.map((c) => `<th class="n">${escapeHtml(c)}</th>`).join('')
+           }</tr></thead><tbody>${rn.map((r) => `<tr><td>${escapeHtml(r)}</td>${
+            cn.map((c) => {
+                const v = (cl[r] || {})[c];
+                const own = r === c ? ' own' : '';
+                return `<td class="n${own}">${num(v, 3)}</td>`;
+            }).join('')}</tr>`).join('')}</tbody></table></div>`
+        : '';
+    const findings = g.findings && g.findings.length
+        ? `<ul class="res-findings">${g.findings.map(
+            (f) => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`
+        : '';
+    // UNMEASURED IS NOT A PASS, and it is kept visually apart from findings for
+    // the same reason the eval keeps `unmeasurable` out of its denominator: a
+    // check that could not run must never render as a check that came back
+    // clean. This is the one failure mode the gate module exists to prevent.
+    const un = g.unmeasured && g.unmeasured.length
+        ? `<div class="res-unmeasured"><b>Not measured</b> (${g.unmeasured.length}) —
+             nothing failed here, and nothing was shown either:
+             <ul>${g.unmeasured.map((u) => `<li>${escapeHtml(u)}</li>`).join('')}</ul></div>`
+        : '';
+    return `<div class="res-block"><h5>Expert gate
+        <span class="badge ${escapeHtml(g.status || '')}">${
+            escapeHtml(g.status || 'unknown')}</span></h5>
+        <div class="res-sub">Run before the stitch, on the specialists
+        themselves. It answers whether there was ever anything for a router to
+        learn from — which is the question a disappointing routing table sends
+        you back to, months later, when re-running it would mean re-running the
+        fine-tunes.</div>
+        ${findings}${un}${rows}${matrix}</div>`;
+}
+
+// Generation quality, held-out, real generation.
+function resQuality(ev) {
+    const q = ev.quality || [];
+    if (!q.length) return '';
+    const row = (r, nested) => {
+        const flags = [];
+        if (r.thin) flags.push('thin sample');
+        if (r.reasoned !== null && r.reasoned <= 0.5) {
+            flags.push('does not reliably reason');
+        }
+        return `<tr class="${nested ? 'nested' : ''}">
+            <td>${nested ? '&#8627; in moe' : escapeHtml(r.name)}</td>
+            <td class="n">${num(r.exact_match)}</td>
+            <td class="n">${num(r.rouge1)}</td>
+            <td class="n">${num(r.bleu)}</td>
+            <td class="n">${num(r.reasoned, 2)}</td>
+            <td class="n">${r.attempted
+                ? escapeHtml(`${r.scored}/${r.attempted}`)
+                : '<span class="none">—</span>'}</td>
+            <td>${escapeHtml(r.status || '')}${flags.length
+                ? ` <span class="warn">! ${escapeHtml(flags.join(' · '))}</span>`
+                : ''}</td></tr>`;
+    };
+    // THE DENOMINATOR GETS A COLUMN. It used to live only in free text that
+    // the routing verdict overwrote, so a mean over 3 rows and a mean over 20
+    // printed identically - which is not a comparison, it is two numbers next
+    // to each other.
+    return `<div class="res-block"><h5>Generation quality</h5>
+        <div class="res-sub">Held-out rows, real generation.
+        <b>scored</b> is the denominator — a mean over 3 rows and a mean over
+        20 are not the same claim. <b>reasoned</b> is the share of outputs that
+        opened <i>and</i> closed a think block, and it is read against the
+        routing table below: high enrichment with low reasoned is the register
+        of deliberation without the structure.</div>
+        <div class="res-scroll"><table class="res-t"><thead><tr>
+            <th>expert</th><th class="n">exact</th><th class="n">rouge1</th>
+            <th class="n">bleu</th><th class="n">reasoned</th>
+            <th class="n">scored</th><th>status</th></tr></thead><tbody>${
+        q.map((r) => row(r, false) + (r.in_moe ? row(r.in_moe, true) : ''))
+         .join('')}</tbody></table></div></div>`;
+}
+
+// Routing: P(expert selected | source), all MoE layers pooled.
+function resRouting(ev) {
+    const rt = ev.routing || {};
+    if (rt.status === 'unmeasurable') {
+        return `<div class="res-block"><h5>Router discrimination</h5>
+            <div class="res-unmeasured"><b>Unmeasurable</b> — ${
+                escapeHtml(rt.reason || 'no reason given')}. That is an absence
+                of a finding, not a finding.</div></div>`;
+    }
+    const rows = rt.experts || [];
+    if (!rows.length) return '';
+    const body = rows.map((e) => {
+        let flag = '';
+        if (e.outranked) flag = '<span class="warn">outranked on its own ground</span>';
+        else if (e.own_is_column_max) flag = '<span class="good">own is top</span>';
+        // NOISE IS NOT A NUMBER. An abandoned expert's enrichment is one small
+        // quantity divided by another; printing 2.15x beside a 0.001 share
+        // invites a reader to quote the best-looking figure in the table.
+        if (!e.enrichment_reliable) {
+            flag = '<span class="warn">starved — read the share, not this</span>';
+        }
+        return `<tr><td>${escapeHtml(e.name)}</td>
+            <td class="n">${num(e.own_share)}</td>
+            <td class="n">${num(e.others_share)}</td>
+            <td class="n">${e.enrichment_reliable
+                ? num(e.enrichment, 2) + '&times;'
+                : '<span class="none">noise</span>'}</td>
+            <td>${escapeHtml(e.top_competitor || '')}</td>
+            <td class="n">${num(e.top_competitor_share)}</td>
+            <td>${flag}</td></tr>`;
+    }).join('');
+    const excluded = (rt.excluded || []).length
+        ? `<div class="res-note">${escapeHtml(rt.excluded.join(', '))} — not
+            scored: no held-out rows left after the router mix.</div>`
+        : '';
+    const foot = [];
+    if (rt.named_experts) {
+        const p = (rt.p_value === null || rt.p_value === undefined)
+            ? 'the probe reported no p-value'
+            : `p=${escapeHtml(Number(rt.p_value).toFixed(5))} for ${
+                escapeHtml(rt.p_value_event
+                    || `at least ${rt.own_is_max_count} of ${rt.named_experts} by chance`)}`;
+        foot.push(`own-expert is the column maximum for
+            <b>${rt.own_is_max_count}/${rt.named_experts}</b>; mean enrichment
+            ${num(rt.mean_enrichment, 2)}&times; · ${p}`);
+    }
+    if (rt.mean_js_bits !== null && rt.mean_js_bits !== undefined) {
+        // INPUT-BLIND IS THE HEADLINE WHEN IT FIRES. A router that ignores its
+        // input entirely produces a perfectly ordinary-looking share table.
+        foot.push(`mean pairwise JS divergence ${num(rt.mean_js_bits, 4)} bits
+            over ${rt.moe_layers} MoE layers — ${rt.input_blind
+                ? '<b class="warn">INPUT-BLIND: the router ignores its input entirely</b>'
+                : 'routing depends on the input'}`);
+    }
+    if (rt.mean_gate_confidence !== null && rt.mean_gate_confidence !== undefined
+            && rt.uniform_confidence) {
+        // SATURATED-AND-BLIND vs BALANCED-AND-BLIND are different diagnoses
+        // with opposite fixes, and the share table cannot tell them apart.
+        // The ceiling is 1/K, not 1.0 - the mean of the K top probabilities
+        // cannot exceed it - which is why this sits next to the JS line.
+        foot.push(`mean gate confidence ${num(rt.mean_gate_confidence)}
+            (uniform ${num(rt.uniform_confidence)}, top-${rt.top_k} maximum
+            ${num(rt.confidence_ceiling)})${rt.saturated
+                ? ' — <b class="warn">SATURATED: the gate is not choosing, it is maximising its own output scale</b>'
+                : ''}`);
+    }
+    // Inside vs after </think>: the DELTA is the finding, so it gets its own
+    // column rather than leaving a reader to subtract two share tables.
+    const segs = rt.think_segments || {};
+    const segBlocks = Object.keys(segs).sort().map((src) => {
+        const s = segs[src] || {};
+        const names = Object.keys(s.delta || {}).sort();
+        if (!names.length) return '';
+        const verdict = s.verdict === 'relay'
+            ? `<div class="res-note"><b>Relay</b> — ${escapeHtml(s.swing_to || '')}
+                takes ${num(s.swing, 3)} more of the selection slots inside the
+                block than after it; ${escapeHtml(s.yields_to || '')} picks it
+                up on the other side.</div>`
+            : (s.verdict === 'duet'
+                ? `<div class="res-note"><b>Duet</b> — nothing swings more than
+                    0.05 at the tag boundary; routing does not hand off at
+                    <code>&lt;/think&gt;</code>.</div>` : '');
+        return `<div class="res-sub">inside vs after <code>&lt;/think&gt;</code>
+            — ${escapeHtml(src)} (${s.samples || 0} rows with a closed block)</div>
+            <div class="res-scroll"><table class="res-t"><thead><tr><th>expert</th>
+            <th class="n">in think</th><th class="n">after</th>
+            <th class="n">delta</th></tr></thead><tbody>${
+            names.map((n) => `<tr><td>${escapeHtml(n)}</td>
+                <td class="n">${num((s.think || {})[n])}</td>
+                <td class="n">${num((s.after || {})[n])}</td>
+                <td class="n">${num((s.delta || {})[n])}</td></tr>`).join('')
+            }</tbody></table></div>${verdict}`;
+    }).join('');
+    const segErrs = Object.keys(rt.think_segment_errors || {}).sort().map(
+        (src) => `<div class="res-note">no think-block segmentation for ${
+            escapeHtml(src)}: ${escapeHtml(rt.think_segment_errors[src])} — a
+            missing row here is a tokenizer limit, not an absence of think
+            blocks.</div>`).join('');
+    return `<div class="res-block"><h5>Router discrimination</h5>
+        <div class="res-sub">P(expert selected | source), all MoE layers
+        pooled.</div>
+        <div class="res-scroll"><table class="res-t"><thead><tr>
+            <th>expert</th><th class="n">own</th><th class="n">others</th>
+            <th class="n">enrich</th><th>top rival</th><th class="n">share</th>
+            <th></th></tr></thead><tbody>${body}</tbody></table></div>
+        ${excluded}${foot.map((f) => `<div class="res-note">${f}</div>`).join('')}
+        ${segBlocks}${segErrs}</div>`;
+}
+
+// Caveats, dead experts, not-specialised, unmeasurable. Kept in four separate
+// lists all the way to the screen: they are four different sentences, and only
+// one of them says the stitch is broken.
+function resNotes(ev) {
+    const bits = [];
+    if ((ev.caveats || []).length) {
+        bits.push(`<div class="res-note caveat"><b>Read with this in mind</b>
+            <ul>${ev.caveats.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ul></div>`);
+    }
+    if ((ev.undiscriminating || []).length) {
+        bits.push(`<div class="res-note"><b>Not specialised:</b>
+            ${escapeHtml(ev.undiscriminating.join(', '))} — used, but showing no
+            preference for their own domain. The stitch is fine; this is a
+            router-training result. Measured: corpus quality, domain contrast
+            and expert strength do not move enrichment; the router's own step
+            count does.</div>`);
+    }
+    if ((ev.dead_experts || []).length) {
+        bits.push(`<div class="res-note bad"><b>Dead experts:</b>
+            ${escapeHtml(ev.dead_experts.join(', '))} — never selected.</div>`);
+    }
+    if ((ev.unmeasured || []).length) {
+        bits.push(`<div class="res-unmeasured"><b>Unmeasurable</b>
+            (${ev.unmeasured.length}) — nothing failed, and nothing was proven
+            either:<ul>${ev.unmeasured.map(
+                (u) => `<li>${escapeHtml(u)}</li>`).join('')}</ul></div>`);
+    }
+    return bits.join('');
+}
+
+function renderResults(r) {
+    const ev = r.eval;
+    const gate = r.gate;
+    const errs = [];
+    // A DOCUMENT THAT IS THERE AND UNREADABLE IS NOT THE SAME AS NO DOCUMENT,
+    // and it gets said. Backstage carried an `errors` list nothing ever drew,
+    // which is the fourth time this codebase found data present and not shown;
+    // these slots exist only because this line renders them.
+    if (r.eval_error) errs.push(r.eval_error);
+    if (r.gate_error) errs.push(r.gate_error);
+    // Silence when a run simply has not been evaluated. Most have not, and a
+    // panel that says "no results" on every one of them teaches its reader to
+    // stop looking at that corner of the screen.
+    if (!ev && !gate && !errs.length) return '';
+    const errHtml = errs.map((e) => `<div class="err">${escapeHtml(e)}</div>`).join('');
+    const head = ev
+        ? `${resProvenance(ev)}<div class="res-when">evaluated ${
+            tick(`eval-age:${r.path}`, fmtAge(ev.generated))}${
+            ev.message ? ' · ' + escapeHtml(ev.message) : ''}</div>`
+        : '';
+    return `<aside class="results"><h4>Results</h4>
+        <div class="res-body">${errHtml}${head}${resGate(gate)}${
+            ev ? resQuality(ev) + resRouting(ev) + resNotes(ev) : ''}</div>
+    </aside>`;
+}
+
 function renderRefusals(m) {
     if (!m.refusals || !m.refusals.length) return '';
     const items = m.refusals.map((r) => `<li>${escapeHtml(r)}</li>`).join('');
@@ -851,8 +1173,8 @@ function renderRung(r, log) {
         // still moving.
         const done = state === 'finished';
         const body = `<div class="run"><div class="run-main">${renderQuiet(r)}${
-            renderSteps(r.path, m, log)}${renderRefusals(m)}</div>${
-            renderPlaybill(m, r.path)}</div>`;
+            renderSteps(r.path, m, log)}${renderRefusals(m)}</div><div class="run-side">${
+            renderPlaybill(m, r.path)}${renderResults(r)}</div></div>`;
         return card(r.path, escapeHtml(m.name || r.name), badge, sub, body, done);
     }
 
@@ -1089,6 +1411,442 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) load
 
 load().then(schedule);
 
+
+// -- previous surgeries -----------------------------------------------------
+//
+// RUNS THAT HAPPENED, which is deliberately not the same list as runs you can
+// still open. Stages shows what is on disk; this shows what was recorded,
+// including the runs whose forty-five gigabytes are long gone.
+//
+// THE TWO MUST NEVER BLUR. Theatre's whole discipline is `presence, not
+// promises` - every reading prefers what a stat says to what was claimed. An
+// archived row is a claim with no disk left to check it against, which is a
+// perfectly good thing to show and a different KIND of fact. Rendering it as
+// though it were a rung would have the viewer assert that a directory exists
+// when it does not, which is the confidently-wrong failure this service is
+// built against, wearing its newest costume.
+//
+// So `rung_present` gets a badge, not a footnote.
+
+let ARCHIVE = null;
+
+function arcVerdict(s) {
+    if (s.ok === 1) return '<span class="badge finished">ok</span>';
+    if (s.ok === 0) return '<span class="badge failed">failed</span>';
+    // NULL IS A THIRD ANSWER. A manifest that never said whether it was ok is
+    // not a failure, and rendering it as one would invent a result.
+    return '<span class="badge disk">no verdict</span>';
+}
+
+// One grading, drawn with the SAME renderers the live results panel uses.
+//
+// Not a second implementation, and that is the point rather than a saving: two
+// renderers for one report would eventually disagree about what a number
+// means, on screen, in a place nobody is checking. The archived row carries the
+// original document and the server re-projects it on read, so what arrives here
+// is exactly the shape a live rung produces.
+function arcGrading(g) {
+    const v = g.view;
+    if (!v) {
+        return `<div class="res-note">This grading was stored before the
+            viewer could re-project it. The document is still in the archive.</div>`;
+    }
+    const prov = v.provenance === 'stale'
+        ? `<span class="badge failed" title="graded an earlier build">stale</span>`
+        : (v.provenance === 'matches'
+            ? `<span class="badge finished">matches</span>`
+            : `<span class="badge disk">unknown build</span>`);
+    return `<div class="arc-grading">
+        <div class="arc-grading-head">${prov}
+            <span class="hint">evaluated ${
+                tick(`arc-eval:${g.grading_key}`, fmtAge(v.generated))}</span>
+            ${v.message ? `<span class="hint">· ${escapeHtml(v.message)}</span>` : ''}
+        </div>
+        ${resQuality(v)}${resRouting(v)}${resNotes(v)}</div>`;
+}
+
+function arcSurgery(s) {
+    // THE ONE THAT MATTERS. A row whose rung is gone is history; a row whose
+    // rung is there can still be opened. Saying which is the whole reason this
+    // list is allowed to exist beside Stages.
+    const gone = !s.rung_present;
+    const where = gone
+        ? `<span class="badge failed" title="the run directory has been deleted">archived only</span>`
+        : `<span class="badge disk">on disk</span>`;
+    const sub = [
+        s.started ? `executed ${escapeHtml(fmtWhen(s.started))}` : null,
+        s.stage ? `stage <code>${escapeHtml(s.stage)}</code>` : null,
+        s.build_id ? `<code title="digest of the resolved config">${
+            escapeHtml(s.build_id)}</code>` : null,
+        `<span class="path">${breakablePath(s.rung_path || '')}</span>`,
+    ].filter(Boolean).join(' · ');
+
+    // The compare tick. On the card rather than in a separate picker, because
+    // choosing which two runs to put side by side is a thing you do WHILE
+    // reading them - a dropdown of run keys would make you leave the evidence
+    // to name the evidence.
+    const picked = COMPARE.has(s.run_key) ? ' checked' : '';
+    // NOT called `tick` - that is the global elapsed-text helper, and shadowing
+    // it inside a renderer would work right up until this function needed to
+    // draw an age, then fail as "tick is not a function" three refactors later.
+    const pickBox = `<label class="cmp-pick" title="pick this run to compare">
+        <input type="checkbox" class="cmp-box" data-run="${
+            escapeHtml(s.run_key)}"${picked}> compare</label>`;
+
+    const gradings = (s.gradings || []).map(arcGrading).join('');
+    const gate = (s.gate && s.gate.view) ? resGate(s.gate.view) : '';
+    // A RUN WITH NO GRADING IS NOT A RUN THAT SCORED ZERO. It was built and
+    // never evaluated, and the sentence has to say so rather than leaving an
+    // empty space where a table would be.
+    const none = gradings ? '' : `<div class="res-note">`
+        + `Built, never evaluated — so there is nothing here to read, which is `
+        + `different from a run that measured badly.</div>`;
+
+    const body = `<div class="arc-body-inner">${gate}${none}${gradings}</div>`;
+    return card(`arc:${s.run_key}`, escapeHtml(s.name || s.run_key),
+                `${arcVerdict(s)} ${where} ${pickBox}`, sub, body, true);
+}
+
+function archiveHtml(state) {
+    if (!state) return '<div class="empty">Loading the archive…</div>';
+    if (state.enabled === false) {
+        // OFF IS A READING, NOT A FAILURE, and it says which one it is.
+        return `<div class="empty"><b>The archive is not running.</b><br>
+            ${escapeHtml(state.error || 'no reason given')}<br><br>
+            Harvest copies the manifest, the eval report and the gate report
+            out of each finished run so the record outlives the run directory —
+            an eval report is ten kilobytes and the rung holding it is forty-five
+            gigabytes, and deleting that rung is the normal thing to do.
+            Turn it on with <code>archive.enabled</code>.</div>`;
+    }
+    const rows = state.surgeries || [];
+    if (!rows.length) {
+        return `<div class="empty"><b>Nothing archived yet.</b><br>
+            A run is harvested once it has <i>finished</i> or <i>failed</i> —
+            never while it is still going, because a manifest mid-run is a
+            sentence about to be replaced.<br>
+            Archive: <code>${escapeHtml(state.path || '')}</code></div>`;
+    }
+    const err = state.error
+        ? `<div class="err">${escapeHtml(state.error)}</div>` : '';
+    return err + rows.map(arcSurgery).join('');
+}
+
+async function loadArchive() {
+    try {
+        ARCHIVE = await api('/api/archive');
+    } catch (e) {
+        ARCHIVE = { enabled: false, error: String(e && e.message || e),
+                    surgeries: [] };
+    }
+    $('arc-body').innerHTML = archiveHtml(ARCHIVE);
+    const n = (ARCHIVE.surgeries || []).length;
+    const total = ARCHIVE.total;
+    $('count-surgeries').textContent = ARCHIVE.enabled === false
+        ? '' : `(${total != null ? total : n})`;
+    $('arc-where').textContent = ARCHIVE.path
+        ? `archive · ${ARCHIVE.path}` : 'archive';
+}
+
+
+
+// -- comparing two runs -----------------------------------------------------
+//
+// THE QUESTION THE ARCHIVE EXISTS FOR: I changed one knob, did it do anything?
+//
+// AND THE REASON THIS IS MOSTLY CAVEAT. Put two runs side by side and the eye
+// does the rest - `router_epochs 3 → 8` in one column, `1.02x → 2.14x` in the
+// other, and a conclusion forms before anybody decides to draw one. That
+// conclusion is warranted only when those were the ONLY things that differed,
+// so the verdict is the first thing on the panel and it is written in
+// sentences rather than shown as a count. `4 inputs changed` is a number a
+// reader skims past; "nothing here tells you which one" is not.
+
+let COMPARE = new Set();
+
+function cmpVerdict(d) {
+    const n = (d.config.inputs || []).length;
+    const followed = (d.config.consequences || []).length;
+    const tail = followed
+        ? ` ${followed} derived value${followed === 1 ? '' : 's'} followed from
+            that, listed separately.`
+        : '';
+    if (d.nondeterminism) {
+        // THE LOUD ONE, and it deserves to be. Identical inputs and different
+        // numbers means something moved that nobody chose - a seed, a corpus
+        // draw, the teacher's sampling. It is worth more than any ordinary
+        // diff because it sets the floor below which no comparison here means
+        // anything at all.
+        return `<div class="cmp-verdict bad"><b>Same configuration, different
+            numbers.</b> Nothing in the fingerprint differs and the results moved
+            anyway — so something changed that nobody chose: a seed, a corpus
+            draw, the teacher's sampling. That is a measurement of how
+            repeatable this pipeline is, and it is the floor under every other
+            comparison on this page.</div>`;
+    }
+    if (d.attribution === 'none') {
+        return `<div class="cmp-verdict ok"><b>Identical configuration.</b>
+            Every fingerprinted value matches${
+                d.same_build ? ', and so does the build id' : ''}.</div>`;
+    }
+    if (d.attribution === 'single') {
+        const f = d.config.inputs[0];
+        return `<div class="cmp-verdict ok"><b>One input changed:</b>
+            <code>${escapeHtml(f.field)}</code>
+            <code>${pbValue(f.a)}</code> → <code>${pbValue(f.b)}</code>.${tail}
+            <br><span class="hint">This is the case where pointing at it is
+            reasonable — and it is still evidence rather than proof, because a
+            seed and a corpus draw move underneath every run.</span></div>`;
+    }
+    return `<div class="cmp-verdict warn"><b>${n} inputs changed.</b>
+        <b>Nothing here tells you which one moved the number.</b>${tail}
+        <br><span class="hint">Change one at a time if you want an answer this
+        page can give you.</span></div>`;
+}
+
+function cmpNum(v, dp) {
+    return (v === null || v === undefined)
+        ? '<span class="none">—</span>'
+        : escapeHtml(Number(v).toFixed(dp === undefined ? 3 : dp));
+}
+
+// A delta with its sign kept. Direction is the whole content of the column.
+function cmpDelta(v, dp) {
+    if (v === null || v === undefined) return '<span class="none">—</span>';
+    const n = Number(v);
+    const cls = n > 0 ? 'up' : (n < 0 ? 'down' : '');
+    const sign = n > 0 ? '+' : '';
+    return `<span class="delta ${cls}">${sign}${escapeHtml(
+        n.toFixed(dp === undefined ? 3 : dp))}</span>`;
+}
+
+function cmpFieldRows(rows, label, note) {
+    if (!rows.length) return '';
+    return `<div class="res-block"><h5>${escapeHtml(label)}</h5>
+        ${note ? `<div class="res-sub">${note}</div>` : ''}
+        <div class="res-scroll"><table class="res-t"><thead><tr>
+            <th>field</th><th>A</th><th>B</th></tr></thead><tbody>${
+        rows.map((r) => `<tr><td>${escapeHtml(r.field)}${
+            r.knob ? pbWhy(r.field, r.knob) : ''}</td>
+            <td><code>${pbValue(r.a)}</code></td>
+            <td><code>${pbValue(r.b)}</code></td></tr>`).join('')
+        }</tbody></table></div></div>`;
+}
+
+function compareHtml(d) {
+    if (!d) return '';
+    if (d.error) return `<div class="err">${escapeHtml(d.error)}</div>`;
+
+    const incomparable = (d.incomparable_because || []).length
+        ? `<div class="res-unmeasured"><b>These are two different
+            experiments, not two points on one.</b>
+            ${d.incomparable_because.map(escapeHtml).join('; ')} — you can look
+            at them side by side, but the differences below are not a
+            controlled comparison of anything.</div>`
+        : '';
+
+    const noGlossary = d.config.has_glossary === false
+        ? `<div class="res-note">This run's manifest carries no knob glossary,
+            so a value somebody CHOSE cannot be told apart from one the pipeline
+            computed. Everything below is listed as an input, which overstates
+            how many decisions were made.</div>`
+        : '';
+
+    const heads = (d.outcome.headline || []).filter(
+        (h) => h.a !== null || h.b !== null);
+    const headline = heads.length
+        ? `<div class="res-block"><h5>What moved</h5>
+            <div class="res-scroll"><table class="res-t"><thead><tr>
+                <th></th><th class="n">A</th><th class="n">B</th>
+                <th class="n">delta</th></tr></thead><tbody>${
+            heads.map((h) => `<tr><td>${escapeHtml(h.label)}</td>
+                <td class="n">${cmpNum(h.a)}</td>
+                <td class="n">${cmpNum(h.b)}</td>
+                <td class="n">${cmpDelta(h.delta)}</td></tr>`).join('')
+            }</tbody></table></div></div>`
+        : '';
+
+    const routing = (d.outcome.routing || []).length
+        ? `<div class="res-block"><h5>Enrichment, per expert</h5>
+            <div class="res-scroll"><table class="res-t"><thead><tr>
+                <th>expert</th><th class="n">A</th><th class="n">B</th>
+                <th class="n">delta</th><th></th></tr></thead><tbody>${
+            d.outcome.routing.map((r) => `<tr><td>${escapeHtml(r.name)}</td>
+                <td class="n">${cmpNum(r.a, 2)}</td>
+                <td class="n">${cmpNum(r.b, 2)}</td>
+                <td class="n">${r.reliable ? cmpDelta(r.delta, 2)
+                    : '<span class="none">—</span>'}</td>
+                <td>${r.reliable ? '' :
+                    '<span class="warn">starved on one side — a delta between '
+                    + 'two noises has no referent</span>'}</td></tr>`).join('')
+            }</tbody></table></div></div>`
+        : '';
+
+    const quality = (d.outcome.quality || []).length
+        ? `<div class="res-block"><h5>Generation quality</h5>
+            <div class="res-scroll"><table class="res-t"><thead><tr>
+                <th>expert</th><th class="n">exact</th><th class="n">rouge1</th>
+                <th class="n">bleu</th><th class="n">reasoned</th>
+                <th></th></tr></thead><tbody>${
+            d.outcome.quality.map((q) => `<tr><td>${escapeHtml(q.name)}</td>
+                ${['exact_match', 'rouge1', 'bleu', 'reasoned'].map(
+                    (m) => `<td class="n">${cmpDelta(q[m].delta,
+                        m === 'reasoned' ? 2 : 3)}</td>`).join('')}
+                <td>${q.thin
+                    ? '<span class="warn">! thin sample on one side</span>'
+                    : ''}</td></tr>`).join('')
+            }</tbody></table></div></div>`
+        : '';
+
+    const unevaluated = (!d.outcome.a_evaluated || !d.outcome.b_evaluated)
+        ? `<div class="res-note">${
+            !d.outcome.a_evaluated && !d.outcome.b_evaluated
+                ? 'Neither run was evaluated'
+                : (!d.outcome.a_evaluated ? 'A was never evaluated'
+                                          : 'B was never evaluated')
+            }, so there are no numbers to compare — which is not the same as
+            numbers that did not move.</div>`
+        : '';
+
+    const side = (s, tag) => `<div class="cmp-side"><b>${tag}</b>
+        ${escapeHtml(s.name || s.run_key)}
+        ${s.build_id ? `<code>${escapeHtml(s.build_id)}</code>` : ''}
+        <span class="hint">${s.started ? escapeHtml(fmtWhen(s.started)) : ''}${
+            s.rung_present ? '' : ' · archived only'}</span></div>`;
+
+    return `<aside class="compare"><h4>A vs B</h4>
+        <div class="cmp-heads">${side(d.a, 'A')}${side(d.b, 'B')}</div>
+        ${incomparable}${cmpVerdict(d)}${noGlossary}
+        ${cmpFieldRows(d.config.inputs, 'Inputs that changed',
+            'Values somebody chose.')}
+        ${cmpFieldRows(d.config.consequences, 'Values that followed',
+            'Computed from the inputs above. Listed apart so a single decision '
+            + 'does not read as a dozen.')}
+        <div class="res-note">${d.config.unchanged} fingerprinted values are
+            identical.</div>
+        ${unevaluated}${headline}${routing}${quality}
+        <div class="cmp-close"><button id="cmp-clear">Close</button></div>
+    </aside>`;
+}
+
+function cmpSync() {
+    const n = COMPARE.size;
+    $('cmp-go').disabled = n !== 2;
+    $('cmp-status').textContent = n === 0 ? ''
+        : (n === 1 ? '1 selected — pick one more' : '2 selected');
+}
+
+// -- the repertoire ---------------------------------------------------------
+//
+// PROMPT BOOKS: recipes somebody can stage again, with the notes that make
+// them worth having. `ms-moe-maker bundle` writes one; this is where it lands.
+//
+// THE WARNING IS THE FEATURE HERE, not the list. A recipe names an
+// `eval.script` and the harness runs it with the interpreter, so a bundle from
+// a friend is executable content BY DESIGN. That is fine between friends and
+// it is not fine silently - so `executes` is drawn where a person will see it
+// before they stage anything, never in a log.
+
+let BOOKS = null;
+
+function repBook(b) {
+    const meta = b.meta || {};
+    const sub = [
+        b.created ? `made ${escapeHtml(fmtWhen(b.created))}` : null,
+        `imported ${tick(`book-age:${b.book_id}`, fmtAge(b.imported))}`,
+        b.build_id
+            ? `<code title="the build this recipe resolves to">${
+                escapeHtml(b.build_id)}</code>`
+            : `<span class="hint">no build_id — this bundle makes no claim</span>`,
+        fmtBytes(b.bytes),
+    ].filter(Boolean).join(' · ');
+
+    // WHAT IT CANNOT PIN. Sixteen fingerprint fields have no recipe key at all
+    // - three read environment variables, twelve are literals in the builder,
+    // one is a CLI flag - so they will follow THIS box, not the one the bundle
+    // came from. The manifest records them precisely so this can be said out
+    // loud rather than discovered from a model that came out wrong.
+    const unpinned = Object.keys(meta.unpinnable || {}).length;
+    // Sentences that a test asserts on are built by concatenation rather than
+    // wrapped inside one template literal - a literal keeps the newline and
+    // the indentation, so `includes('a b')` fails on text that reads correctly
+    // in a browser. Second time that has bitten; hence the note.
+    const caveat = unpinned
+        ? `<div class="res-note">`
+          + `<b>${unpinned} settings cannot travel in a recipe</b> — they come `
+          + `from this box's environment and builder version, not from the `
+          + `bundle. They are recorded in the manifest, so a build here can be `
+          + `compared against the one it describes.</div>`
+        : '';
+
+    const notes = b.notes
+        ? `<div class="rep-notes">${escapeHtml(b.notes)}</div>` : '';
+
+    const body = `<div class="rep-body-inner">
+        ${caveat}${notes}
+        <div class="rep-actions">
+            <button class="rep-open" data-book="${escapeHtml(b.book_id)}"
+                >Show the recipe</button>
+            <a class="btn" href="/api/books/${encodeURIComponent(b.book_id)}/bundle"
+               >Download the bundle</a>
+            <button class="rep-delete" data-book="${escapeHtml(b.book_id)}"
+                >Delete</button>
+        </div>
+        <div class="rep-recipe" id="recipe-${escapeHtml(b.book_id)}"></div>
+    </div>`;
+    return card(`book:${b.book_id}`, escapeHtml(b.name || b.book_id),
+                '', sub, body, true);
+}
+
+function repHtml(state) {
+    if (!state) return '<div class="empty">Loading the repertoire…</div>';
+    if (state.enabled === false) {
+        return `<div class="empty"><b>The archive is not running</b>, so there
+            is nowhere to keep prompt books.<br>
+            ${escapeHtml(state.error || '')}</div>`;
+    }
+    const books = state.books || [];
+    if (!books.length) {
+        return `<div class="empty"><b>Nothing on the shelf.</b><br>
+            A prompt book is a recipe with every default stamped in, plus the
+            notes and any corpora it needs — made with
+            <code>ms-moe-maker bundle &lt;recipe&gt;</code>.<br>
+            Handing somebody a bare recipe hands them your intentions and their
+            defaults; a bundle builds the same thing on their box.</div>`;
+    }
+    return (state.error ? `<div class="err">${escapeHtml(state.error)}</div>` : '')
+        + books.map(repBook).join('');
+}
+
+async function loadRepertoire() {
+    try {
+        BOOKS = await api('/api/books');
+    } catch (e) {
+        BOOKS = { enabled: false, error: String(e && e.message || e), books: [] };
+    }
+    $('rep-body').innerHTML = repHtml(BOOKS);
+    const n = (BOOKS.books || []).length;
+    $('count-books').textContent = BOOKS.enabled === false ? '' : `(${n})`;
+}
+
+// Shown when a book is opened, and this is where `executes` has to land: a
+// person is about to read a recipe with the intention of staging it.
+function repRecipeHtml(d) {
+    const danger = (d.executes || []).length
+        ? `<div class="res-unmeasured"><b>This recipe runs code.</b>
+            ${d.executes.map((e) => `<code>${escapeHtml(e)}</code>`).join(', ')}
+            — the eval harness executes that file with the interpreter. That is
+            a documented feature and it is somebody else's script; read it
+            before you stage this.</div>`
+        : '';
+    const missing = d.bytes_present === false
+        ? `<div class="err">The row is here but the bundle's bytes are not, so
+            this cannot be handed on. The recipe below is still readable.</div>`
+        : '';
+    return danger + missing
+        + `<pre class="rep-yaml">${escapeHtml(d.recipe || '')}</pre>`;
+}
+
 // -- backstage --------------------------------------------------------------
 // Present in the pack always, ENABLED only when GET / says the router is
 // mounted. The tab being hidden is cosmetic; the guarantee is that on a base
@@ -1164,9 +1922,24 @@ async function loadBackstage() {
         const errs = (BACKSTAGE.errors || []).map(
             (e) => `<li>${escapeHtml(e)}</li>`).join('');
 
+        // WHICH INSTALL ANSWERED. Every line below this is a statement about
+        // one specific binary, and until now it was attributed to none: a
+        // craft form built from a stale `describe` looks exactly like a craft
+        // form built from the right one. `source` is printed beside it because
+        // a config that is being IGNORED must not read as a config that was
+        // honoured - the same reason a rung says whether its state came from
+        // the manifest or from file activity.
+        const pl = BACKSTAGE.pipeline || {};
+        const plHtml = pl.command
+            ? `<b>answering install</b><ul><li><code>${escapeHtml(pl.command)}</code>`
+              + ` <span class="hint">(${escapeHtml(pl.source)}${
+                  pl.literal ? '' : ' — not the documented console script'})</span></li></ul>`
+            : '';
+
         $('bs-help').innerHTML =
             (errs ? `<b class="warn">the box could not answer everything</b>`
                   + `<ul>${errs}</ul>` : '')
+            + plHtml
             + `<b>source kinds on this box</b><ul>${kinds}</ul>`
             + `<b>validators</b><ul>${vals}</ul>`
             + (fams
@@ -1184,17 +1957,95 @@ function bsShow(ok, text) {
         `<pre class="${ok ? 'ok' : 'bad'}">${escapeHtml(text || '(no output)')}</pre>`;
 }
 
-async function bsPost(path, body) {
-    const r = await api(path, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-    });
-    return r;
+async function bsPost(path, body, method) {
+    // `method` because DELETE is a write too and it would be silly to have a
+    // second near-identical helper for it. A null body sends no Content-Type
+    // and no payload, which is what a DELETE wants.
+    const init = { method: method || 'POST' };
+    if (body !== null && body !== undefined) {
+        init.headers = { 'Content-Type': 'application/json' };
+        init.body = JSON.stringify(body);
+    }
+    return api(path, init);
 }
 
 document.addEventListener('click', async (e) => {
     const id = e.target && e.target.id;
+    if (id === 'cmp-go') {
+        const [a, b] = [...COMPARE];
+        $('cmp-body').innerHTML = '<div class="empty">comparing…</div>';
+        try {
+            $('cmp-body').innerHTML = compareHtml(await api(
+                `/api/archive/diff?a=${encodeURIComponent(a)}&b=${
+                    encodeURIComponent(b)}`));
+        } catch (err) {
+            $('cmp-body').innerHTML =
+                `<div class="err">${escapeHtml(String(err.message || err))}</div>`;
+        }
+        return;
+    }
+    if (id === 'cmp-clear') {
+        $('cmp-body').innerHTML = '';
+        COMPARE = new Set();
+        cmpSync();
+        await loadArchive();
+        return;
+    }
+    if (id === 'rep-reload') {
+        $('rep-body').innerHTML = '<div class="empty">re-reading…</div>';
+        await loadRepertoire();
+        return;
+    }
+    if (id === 'rep-import') { $('rep-file').click(); return; }
+    if (e.target && e.target.classList
+            && e.target.classList.contains('rep-open')) {
+        const book = e.target.getAttribute('data-book');
+        const slot = $(`recipe-${book}`);
+        // Toggle: a second click puts the panel away rather than stacking.
+        if (slot.innerHTML) { slot.innerHTML = ''; return; }
+        slot.innerHTML = '<div class="hint">reading…</div>';
+        try {
+            slot.innerHTML = repRecipeHtml(
+                await api('/api/books/' + encodeURIComponent(book)));
+        } catch (err) {
+            slot.innerHTML = `<div class="err">${escapeHtml(String(err))}</div>`;
+        }
+        return;
+    }
+    if (e.target && e.target.classList
+            && e.target.classList.contains('rep-delete')) {
+        // NO confirm(). A modal dialog in this viewer is a thing that blocks
+        // the poll loop; the honest alternative is that the button says what
+        // it does and the bundle is recoverable from whoever sent it.
+        const book = e.target.getAttribute('data-book');
+        $('rep-out').innerHTML = '<div class="hint">deleting…</div>';
+        try {
+            // The BACKSTAGE path: deleting is a write, so it lives behind
+            // the extra. /api/books is the read half and has no verbs.
+            await bsPost('/api/backstage/books/' + encodeURIComponent(book),
+                         null, 'DELETE');
+            $('rep-out').innerHTML = '';
+            await loadRepertoire();
+        } catch (err) {
+            $('rep-out').innerHTML =
+                `<div class="err">${escapeHtml(String(err))}</div>`;
+        }
+        return;
+    }
+    if (id === 'arc-reload') {
+        $('arc-body').innerHTML = '<div class="empty">re-reading…</div>';
+        await loadArchive();
+        return;
+    }
+    if (id === 'bs-reload') {
+        // Re-ask everything: the recipe list, the registries, and which
+        // install is answering. All three can change without the page
+        // knowing, and two of them change on the box rather than in here.
+        $('bs-out').innerHTML = '<div class="hint">re-reading…</div>';
+        await loadBackstage();
+        $('bs-out').innerHTML = '';
+        return;
+    }
     if (!id || !id.startsWith('bs-')) return;
     const name = $('bs-name').value.trim() || $('bs-list').value;
     const text = $('bs-text').value;
@@ -1238,4 +2089,65 @@ document.addEventListener('change', async (e) => {
     }
 });
 
+// The file input is a change event rather than a click, so it sits outside the
+// delegated click handler above.
+document.addEventListener('change', async (e) => {
+    if (e.target && e.target.classList
+            && e.target.classList.contains('cmp-box')) {
+        const key = e.target.getAttribute('data-run');
+        if (e.target.checked) {
+            // TWO, and the third click replaces the oldest rather than being
+            // refused. A checkbox that silently will not tick reads as a
+            // broken page; swapping is at least a rule you can see happen.
+            COMPARE.add(key);
+            while (COMPARE.size > 2) {
+                COMPARE.delete(COMPARE.values().next().value);
+            }
+            // Re-render so a de-selected box actually clears on screen.
+            if (COMPARE.size === 2) await loadArchive();
+        } else {
+            COMPARE.delete(key);
+        }
+        cmpSync();
+        return;
+    }
+    if (!e.target || e.target.id !== 'rep-file') return;
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    $('rep-out').innerHTML =
+        `<div class="hint">importing ${escapeHtml(file.name)}…</div>`;
+    try {
+        // RAW BODY, not multipart - see the note on the route. `fetch` sends
+        // the File as-is and the server never needed a form parser.
+        const res = await fetch(
+            '/api/backstage/books?name='
+            + encodeURIComponent(file.name.replace(/\.zip$/i, '')),
+            { method: 'POST', body: file });
+        const out = await res.json();
+        if (!res.ok) throw new Error(out.detail || res.statusText);
+        const warn = (out.executes || []).length
+            ? ` <b class="warn">This recipe runs ${escapeHtml(
+                out.executes.join(', '))}.</b>`
+            : '';
+        const unchecked = out.validated && out.validated.ok === false
+            ? ` <span class="hint">(it did not validate here: ${
+                escapeHtml((out.validated.output || '').slice(0, 200))})</span>`
+            : '';
+        // STORED EITHER WAY. The box a bundle is given to is exactly the one
+        // whose builder might be older or absent, and refusing the gift there
+        // would fail at the feature's whole purpose.
+        $('rep-out').innerHTML = `<div class="hint">imported <b>${
+            escapeHtml(out.name)}</b>.${warn}${unchecked}</div>`;
+        await loadRepertoire();
+    } catch (err) {
+        $('rep-out').innerHTML =
+            `<div class="err">${escapeHtml(String(err.message || err))}</div>`;
+    } finally {
+        e.target.value = '';
+    }
+});
+
 loadBackstage();
+loadArchive();
+loadRepertoire();
+cmpSync();

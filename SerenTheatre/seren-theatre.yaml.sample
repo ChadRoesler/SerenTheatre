@@ -20,6 +20,53 @@ server:
 tail_bytes: 262144
 refresh_seconds: 5
 
+# WHICH ms-moe-maker Theatre forks, for `describe`, `validate` and every build.
+#
+# Set this if the viewer and the builder live in different venvs, which on a
+# real box they usually do. Without it the answer comes from `ms-moe-maker` on
+# the PATH OF THE SHELL THE SERVICE WAS STARTED FROM - so Backstage can end up
+# describing an old install while your work happens in another, and the only
+# symptom is a craft form that looks slightly out of date.
+#
+# Whatever is resolved is reported on `GET /` and in the Backstage panel, so
+# you can always read which binary answered instead of deducing it.
+#
+# If you name one and it isn't there, Theatre raises rather than falling back
+# to PATH - falling back is the thing this setting exists to prevent.
+#
+# pipeline:
+#   venv: /mnt/nvme/msMoEMaker
+#   # command: /usr/local/bin/ms-moe-maker   # or name the script outright
+#
+# Env equivalents, for a systemd unit or an ssh one-liner:
+#   SEREN_THEATRE_VENV=/mnt/nvme/msMoEMaker
+#   SEREN_THEATRE_MSMOE=/usr/local/bin/ms-moe-maker
+
+# WHAT SURVIVES AFTER YOU DELETE A RUNG.
+#
+# The problem is not that files get deleted - it is that the thing worth
+# keeping is INSIDE the thing you have to delete. An eval report is ten
+# kilobytes; the rung holding it is forty-five gigabytes. Deleting that rung is
+# the correct, routine thing to do when you need the disk back, and doing it
+# takes the record with it.
+#
+# So the three small documents - manifest, eval report, gate report - are
+# copied into a store Theatre owns, keyed per run, as part of the ordinary
+# scan. Nothing large is copied: the point is that the record stops being
+# attached to the weights.
+#
+# The store lives OUTSIDE every stage, deliberately, so the cleanup this exists
+# to survive cannot reach it. Only sqlite is implemented; the DSN is here so
+# the engine is a config line rather than a rewrite the day there is a second
+# writer worth having.
+#
+# archive:
+#   enabled: true
+#   dsn: ~/seren-theatre/archive.db     # or sqlite:///path/to/archive.db
+#   blobs: ~/seren-theatre/blobs        # content-addressed; never browsed by hand
+#
+# Env: SEREN_THEATRE_ARCHIVE, SEREN_THEATRE_ARCHIVE_ENABLED=0
+
 stages:
   - name: FraunkensteinsLab
     path: /mnt/nvme/fraunkensteinLab
@@ -30,6 +77,10 @@ stages:
     # dryrun_0.5B/, fraunkenstein_agent_1.5B/, fraunkenstein_agent_14B/ ...
     rungs:
       - "dryrun_*"
+      # The pipeline's own default output directories: msmoe_run_{size} and
+      # msmoe_dryrun_{size}. Without this a default install of both projects
+      # shows an empty stage and says nothing about why.
+      - "msmoe_*"
       - "*_agent_*"
 
   # A stage is just a directory - nothing needs instrumenting to be watched.

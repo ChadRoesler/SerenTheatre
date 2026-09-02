@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from fnmatch import fnmatch
 
+from . import evalreport as _results
 from . import manifest as _manifest
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -617,6 +618,42 @@ def scan_rung(root: Path) -> Dict[str, Any]:
         if found is not None:
             out["manifest"] = _manifest.as_dict(found)
             out["source"] = "manifest"
+
+    # ── what a FINISHED run left behind ──────────────────────────────────
+    #
+    # Read here, beside the manifest, because these are the same KIND of
+    # thing: small result documents dropped in the run directory rather than
+    # artifacts to be pattern-matched. `eval` is a separate command from
+    # `build` on purpose - a model must not grade itself as part of being
+    # built - so its report is its own file and gets found by scanning,
+    # exactly the way the GGUF and the smoke-pass marker are.
+    #
+    # THE MANIFEST'S build_id IS PASSED IN, and that is the load-bearing part.
+    # A rung gets rebuilt and the old eval report stays there, still valid
+    # JSON, still full of confident numbers about a model that no longer
+    # exists. Rendering that beside the new build is the C# 0/10 failure in a
+    # new costume: nothing looks wrong and the reader draws a conclusion about
+    # a thing that was never measured. evalreport.provenance answers it in
+    # three states, and "unknown" is one of them.
+    #
+    # A BROKEN DOCUMENT IS SURFACED, NOT SWALLOWED. Backstage carried an
+    # `errors` list that nothing ever rendered, and the fix for that was the
+    # fourth time this codebase found data present and not shown. These two
+    # error slots exist only if the viewer draws them; that is the deal.
+    out["eval"] = None
+    out["eval_error"] = None
+    out["gate"] = None
+    out["gate_error"] = None
+    manifest_build = str((out.get("manifest") or {}).get("build_id") or "")
+    try:
+        out["eval"] = _results.read_eval(root, manifest_build)
+    except _results.UnreadableResult as exc:
+        out["eval_error"] = str(exc)
+    try:
+        out["gate"] = _results.read_gate(root)
+    except _results.UnreadableResult as exc:
+        out["gate_error"] = str(exc)
+
     try:
         entries = sorted(root.iterdir())
     except OSError:

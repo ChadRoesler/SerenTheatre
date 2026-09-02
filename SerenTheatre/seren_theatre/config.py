@@ -75,7 +75,21 @@ class StageConfig:
     # Globs, relative to path, for run logs. Ordered by mtime when displayed.
     logs: List[str] = field(default_factory=lambda: ["*.log"])
     # Globs for artifact roots - the per-rung output directories.
-    rungs: List[str] = field(default_factory=lambda: ["dryrun_*", "*_agent_*"])
+    #
+    # `msmoe_*` IS THE PIPELINE'S OWN DEFAULT AND WAS MISSING. Left to itself,
+    # ms-moe-maker writes to `msmoe_run_{size}` or `msmoe_dryrun_{size}` - and
+    # neither of the two globs here matches either of those. So a stranger who
+    # installed both projects and changed nothing got an empty stage with no
+    # explanation, which reads as "nothing has been built here" rather than as
+    # "the viewer is looking for directories with other names". A silent miss
+    # that looks like an honest empty is the worst shape a default can have.
+    #
+    # It also catches `msmoe_data`, the shared corpus root, which is NOT a run
+    # - and that is fine: looks_like_rung() drops it, which is the exact case
+    # it was written for after `dryrun_data` rendered as an empty rung card.
+    # Broad glob, narrow predicate.
+    rungs: List[str] = field(default_factory=lambda: ["dryrun_*", "msmoe_*",
+                                                      "*_agent_*"])
 
     def resolved(self) -> Path:
         return Path(os.path.expanduser(self.path)).resolve()
@@ -148,6 +162,108 @@ class UpdatesConfig:
 
 
 @dataclass
+class PipelineConfig:
+    """WHICH ms-moe-maker Theatre forks. The answer used to be "whichever one".
+
+    Theatre runs `ms-moe-maker describe`, `validate` and `build` as CHILD
+    PROCESSES rather than importing them - deliberately, because importing
+    resolves inside whatever interpreter Theatre happens to be running under,
+    and on a real box the viewer and the builder live in different venvs. The
+    fork asks the install a person would actually type.
+
+    But "the install a person would type" was `shutil.which`, which is a
+    property of the SHELL THE SERVICE WAS STARTED FROM. Start Theatre from a
+    login shell with an old ms-moe-maker on PATH and Backstage describes that
+    one - so the craft form shows registries from one install while your work
+    happens in another, and the only symptom is a form that looks slightly out
+    of date. Nothing anywhere says which binary answered.
+
+    So it becomes configuration, and the resolution is reported on the API so
+    it can be READ rather than deduced.
+
+        pipeline:
+          venv: /mnt/nvme/msMoEMaker     # the console script inside it wins
+          # command: /usr/local/bin/ms-moe-maker   # or name it outright
+
+    NAMING ONE AND MISSING IT IS AN ERROR, NOT A FALLBACK. If `venv` or
+    `command` is set and nothing is there, resolution RAISES rather than
+    quietly dropping back to PATH - because dropping back to PATH is precisely
+    the behaviour the setting exists to stop, and a silent downgrade to the
+    thing you were avoiding is the worst possible way to honour a config file.
+    """
+
+    # An explicit path to the console script. Wins over everything.
+    command: str = ""
+    # A virtualenv root. bin/ms-moe-maker (or Scripts\ms-moe-maker.exe) inside
+    # it is used, falling back to that venv's OWN python -m ms_moe_maker -
+    # still inside the venv named here, never outside it.
+    venv: str = ""
+
+    @classmethod
+    def from_dict(cls, d: Optional[dict]) -> "PipelineConfig":
+        if not isinstance(d, dict):
+            return cls()
+        return cls(command=str(d.get("command") or ""),
+                   venv=str(d.get("venv") or ""))
+
+    def configured(self) -> bool:
+        """Did somebody ask for a specific install? Decides raise-vs-fallback."""
+        return bool(self.command or self.venv)
+
+
+@dataclass
+class ArchiveConfig:
+    """What survives after a rung directory is deleted.
+
+    THE PROBLEM IS NOT THAT FILES GET DELETED. It is that the thing worth
+    keeping is inside the thing you have to delete: an eval report is ten
+    kilobytes and the rung holding it is forty-five gigabytes. Deleting that
+    rung is the correct, routine thing to do when you need the disk back, and
+    doing it destroys the record - so the more disciplined you are about disk,
+    the less history you have.
+
+    Harvest copies the three small documents - manifest, eval report, gate
+    report - into a store Theatre owns, keyed per run. Nothing large is copied;
+    the point is precisely that the record stops being attached to the weights.
+
+    ON BY DEFAULT, and living beside the recipes for the same reason they do:
+    outside every stage, so the cleanup this exists to survive cannot reach it,
+    and by construction rather than by a check that has to keep being right.
+
+        archive:
+          enabled: true
+          dsn: ~/seren-theatre/archive.db     # or sqlite:///...
+          blobs: ~/seren-theatre/blobs
+
+    Only sqlite is implemented. The DSN exists so the engine is a config line
+    rather than a rewrite when there is a second writer worth having - see
+    archive/store.py for why shipping an untested driver would be the one kind
+    of claim this service must not make.
+    """
+
+    enabled: bool = True
+    # Empty means ~/seren-theatre/archive.db. Resolved lazily so a test can
+    # move HOME without this having been frozen at import - same as recipes.
+    dsn: str = ""
+    blobs: str = ""
+
+    @classmethod
+    def from_dict(cls, d: Optional[dict]) -> "ArchiveConfig":
+        if not isinstance(d, dict):
+            return cls()
+        return cls(enabled=bool(d.get("enabled", True)),
+                   dsn=str(d.get("dsn") or ""),
+                   blobs=str(d.get("blobs") or ""))
+
+    def resolved_dsn(self) -> str:
+        return self.dsn or str(Path.home() / "seren-theatre" / "archive.db")
+
+    def blobs_dir(self) -> Path:
+        raw = self.blobs or str(Path.home() / "seren-theatre" / "blobs")
+        return Path(os.path.expanduser(raw)).resolve()
+
+
+@dataclass
 class TheatreConfig:
     """The whole service: server + tls + updates + the stages it watches."""
 
@@ -174,6 +290,10 @@ class TheatreConfig:
     # Empty means ~/seren-theatre/recipes. Resolved lazily so a test can move
     # HOME without this having been frozen at import.
     recipes: str = ""
+    # Which ms-moe-maker to fork. See PipelineConfig.
+    pipeline: "PipelineConfig" = field(default_factory=lambda: PipelineConfig())
+    # What outlives the run directories. See ArchiveConfig.
+    archive: "ArchiveConfig" = field(default_factory=lambda: ArchiveConfig())
 
     def recipes_dir(self) -> Path:
         raw = self.recipes or str(Path.home() / "seren-theatre" / "recipes")
@@ -205,6 +325,10 @@ class TheatreConfig:
             self.tls = TlsConfig.from_dict(self.tls)
         if isinstance(self.updates, dict):
             self.updates = UpdatesConfig.from_dict(self.updates)
+        if isinstance(self.pipeline, dict):
+            self.pipeline = PipelineConfig.from_dict(self.pipeline)
+        if isinstance(self.archive, dict):
+            self.archive = ArchiveConfig.from_dict(self.archive)
         if isinstance(self.stages, list):
             self.stages = [
                 s if isinstance(s, StageConfig) else StageConfig.from_dict(s)
@@ -346,6 +470,19 @@ def _apply_env_overrides(cfg: TheatreConfig) -> TheatreConfig:
     if v := env.get("SEREN_THEATRE_RECIPES"):
         cfg.recipes = v
 
+    # The one-liner for "just use the builder in this venv", which is how this
+    # gets set nine times out of ten - from a systemd unit or an ssh command,
+    # not from editing yaml.
+    if v := env.get("SEREN_THEATRE_ARCHIVE"):
+        cfg.archive.dsn = v
+    if (v := env.get("SEREN_THEATRE_ARCHIVE_ENABLED")) is not None:
+        cfg.archive.enabled = v.strip().lower() not in ("0", "false", "no", "off")
+
+    if v := env.get("SEREN_THEATRE_VENV"):
+        cfg.pipeline.venv = v
+    if v := env.get("SEREN_THEATRE_MSMOE"):
+        cfg.pipeline.command = v
+
     if v := env.get("SEREN_THEATRE_STAGE"):
         cfg.stages.append(StageConfig(name=Path(v).name or "stage", path=v))
 
@@ -373,5 +510,7 @@ def load_config(path: Optional[str] = None) -> TheatreConfig:
         refresh_seconds=_float(data.get("refresh_seconds"),
                                default.refresh_seconds),
         recipes=str(data.get("recipes") or ""),
+        pipeline=PipelineConfig.from_dict(data.get("pipeline")),
+        archive=ArchiveConfig.from_dict(data.get("archive")),
     )
     return _apply_env_overrides(cfg)
