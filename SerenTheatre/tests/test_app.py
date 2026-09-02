@@ -22,6 +22,8 @@ from fastapi.testclient import TestClient
 
 import importlib.util
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import seren_theatre
@@ -229,6 +231,82 @@ def test_the_guard_answers_for_a_path_that_does_not_exist_yet(guarded, tmp_path)
     definition, and the directory it lands in is what decides containment."""
     assert is_inside_a_stage(tmp_path / "recipes" / "nope.yaml", guarded) is None
     assert is_inside_a_stage(tmp_path / "lab" / "nope.yaml", guarded) is not None
+
+
+# -- the refresh, and the two things it must not throw away -------------------
+#
+# THE ANNOYANCE, and it is worth stating because the fix looks like caching.
+# `load()` replaced #stages-body wholesale every five seconds. Collapse state
+# survived that; SCROLL POSITION did not - "you could be mid review near the
+# bottom then BOOP! up to the top you go" - and during a ~58-minute fine-tune
+# the manifest is not rewritten once, so roughly 700 consecutive polls rebuilt
+# a page that had not changed.
+#
+# WHY THE INTERESTING HALF IS CHECKED IN JAVASCRIPT. The trap is that several
+# payload fields are computed against the server's clock and tick on every
+# poll, so a naive compare never matches and the "fix" is an elaborate no-op
+# that LOOKS like it works. Nothing about that failure is visible: no error, no
+# log line, just the scroll jumping again. Text assertions cannot catch it, so
+# the real file is loaded into a shimmed DOM and asserted against a fixture
+# board - see tests/viewer_probe.js, which is also where (2) and (3) are
+# checked. The RENDERED look of it is not tested and is not testable here;
+# that half was eyeballed.
+
+PROBE = Path(__file__).resolve().parent / "viewer_probe.js"
+
+
+def test_the_viewer_pack_behaves_under_a_shimmed_dom():
+    """The pack is what ships, so the pack is what gets exercised.
+
+    Skipped, NAMING WHAT IT WAITS FOR, when node is not installed - a skip with
+    a sentence in it is recoverable, a silent one is how a check goes blind.
+    Theatre itself needs no node and never will; this is a test-time tool.
+    """
+    if shutil.which("node") is None:
+        pytest.skip("node is not on PATH, so scripts.js cannot be executed. "
+                    "This check is waiting for it, and until then the viewer's "
+                    "refresh logic is pinned only by the substring assertions "
+                    "below. Theatre does not need node to run.")
+    out = subprocess.run(["node", str(PROBE), str(PACK / "scripts.js")],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr or out.stdout
+
+
+def test_the_room_still_knows_which_fields_come_from_the_clock():
+    """The exclusion list is the whole mechanism, and forgetting to extend it
+    is INVISIBLE: the signature stops matching, the page goes quietly back to
+    re-rendering every poll, and nothing says so. So the names are pinned here
+    against the server that produces them."""
+    js = (PACK / "scripts.js").read_text(encoding="utf-8")
+    assert "CLOCK_DERIVED" in js and "structuralSignature" in js
+    for field in ("stalled_for", "since_activity", "manifest_quiet_for",
+                  "newest_activity_for", "quiet_for", "elapsed",
+                  "generated", "took_ms"):
+        assert f"'{field}'" in js, (
+            f"{field} is computed from the server clock and is not in the "
+            f"viewer's exclusion set; every signature will differ and the "
+            f"page is back to rebuilding itself every five seconds")
+
+
+def test_the_playbill_is_keyed_on_the_thing_that_cannot_change():
+    """(2) `resolved` is stamped once at build start, so build_id changing is
+    the only event that can change this panel. True by construction."""
+    js = (PACK / "scripts.js").read_text(encoding="utf-8")
+    assert "KEPT_PLAYBILLS" in js and "data-playbill" in js
+    assert "scrollTop" in js, (
+        "the adopted panel's scroll position is not being carried across, "
+        "which was the entire complaint")
+
+
+def test_a_path_is_escaped_before_it_is_given_break_points():
+    """(3) Order matters and the wrong one is a hole, not a cosmetic bug: a
+    manifest's defaults path is not this viewer's string to trust."""
+    js = (PACK / "scripts.js").read_text(encoding="utf-8")
+    assert "function breakablePath" in js
+    body = js.split("function breakablePath", 1)[1].split("}", 1)[0]
+    assert body.index("escapeHtml") < body.index("wbr"), (
+        "breakablePath inserts <wbr> before escaping, which both breaks the "
+        "escaping and renders the tag as visible text")
 
 
 # -- empty is a true reading --------------------------------------------------

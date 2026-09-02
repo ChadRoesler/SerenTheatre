@@ -21,6 +21,154 @@ let REFRESH_MS = 5000;
 // keep re-opening what they just shut. In memory only - no storage APIs.
 const COLLAPSED = new Set();
 
+// -- (1) DO NOT REWRITE THE DOM WHEN NOTHING STRUCTURAL CHANGED --------------
+//
+// THE ANNOYANCE. `load()` replaced #stages-body wholesale every five seconds.
+// Collapse state survived that (COLLAPSED, above) because somebody had already
+// hit this problem once; SCROLL POSITION did not. So you could be halfway down
+// the playbill reviewing a config and - BOOP - back to the top, every five
+// seconds, forever.
+//
+// THE SIZE OF IT, beyond the annoyance: the manifest is written on STAGE
+// TRANSITIONS, and a fine-tune stage runs about 58 minutes. Across one of them
+// roughly 700 consecutive polls carry a board that is identical in every way
+// that has a pixel on screen, and all 700 rebuilt the page.
+//
+// THE WRINKLE THAT MAKES THE NAIVE VERSION DO NOTHING. Several fields are
+// computed against the server's clock and therefore differ on EVERY poll, so
+// `JSON.stringify(a) === JSON.stringify(b)` never once matches and you have
+// built an elaborate no-op. Hence a SIGNATURE: the payload with the
+// clock-derived fields taken out.
+//
+// THE LIST BELOW WAS DERIVED BY READING sources.py AND manifest.py FOR WHAT IS
+// ACTUALLY COMPUTED FROM `now`, not by guessing from field names:
+//
+//   generated, took_ms   app.state()             the envelope's own clock
+//   stalled_for          sources.parse_run_log   now - the log's mtime
+//   since                sources._file_activity  now - that file's mtime
+//   since_activity       sources.read_launch     now - the newest mtime
+//   quiet_for            sources.quiet_reading   now - each file's mtime
+//   manifest_quiet_for   sources.quiet_reading   now - manifest `updated`
+//   newest_activity_for  sources.quiet_reading   the smallest of those
+//   elapsed              manifest.Stage.elapsed  now - started, while running
+//
+// ADD TO THIS SET WHEN A NEW CLOCK-DERIVED FIELD IS ADDED SERVER-SIDE, and be
+// aware that forgetting to is INVISIBLE: the signature simply never matches
+// again, the page goes quietly back to re-rendering every five seconds, and
+// nothing anywhere says so. If the scroll starts jumping again, look here
+// first, and diff a payload against itself two seconds apart.
+//
+// DELIBERATELY NOT EXCLUDED: `stale` and `state`, which manifest.py also
+// derives from the clock. They only CHANGE when the run's story changes, and
+// that change is exactly the re-render this must not miss.
+const CLOCK_DERIVED = new Set([
+    'generated', 'took_ms',
+    'stalled_for',
+    'since', 'since_activity',
+    'quiet_for', 'manifest_quiet_for', 'newest_activity_for',
+    'elapsed',
+]);
+
+let LAST_SIGNATURE = null;
+
+// The payload, minus the clock, as a stable string.
+//
+// Keys are SORTED rather than taken in payload order, so a server refactor that
+// reorders a dict - a thing python does for free and nobody notices - does not
+// read as a structural change and flush the page.
+//
+// TWO CLOCK-DERIVED VALUES GATE WHETHER A BLOCK EXISTS AT ALL rather than what
+// it says, so dropping them outright would let a panel appear or vanish with no
+// re-render behind it. They come back as the CROSSING and not the number, which
+// is stable between crossings and moves exactly once, when it matters.
+function structuralSignature(payload) {
+    const walk = (v) => {
+        if (Array.isArray(v)) return v.map(walk);
+        if (v && typeof v === 'object') {
+            const out = {};
+            Object.keys(v).sort().forEach((k) => {
+                if (!CLOCK_DERIVED.has(k)) out[k] = walk(v[k]);
+            });
+            // renderQuiet draws nothing at all until the manifest has been
+            // quiet for longer than after_seconds.
+            if (typeof v.manifest_quiet_for === 'number'
+                && typeof v.after_seconds === 'number') {
+                out['~quiet'] = v.manifest_quiet_for > v.after_seconds;
+            }
+            // renderLog draws its "no new output" line only for a positive
+            // duration - which is all but always, and "all but" is the point.
+            if ('stalled_for' in v) out['~stalled'] = !!v.stalled_for;
+            return out;
+        }
+        return v;
+    };
+    return JSON.stringify(walk(payload));
+}
+
+// -- text that ticks, without a re-render -----------------------------------
+//
+// Every elapsed-time string on the page registers itself under a stable key as
+// it is rendered. On a poll that changed nothing structural, the SAME renderers
+// run again into a string that is thrown away, and only the registered text is
+// written back into the live nodes.
+//
+// RE-RUNNING THE RENDERERS IS THE POINT, not a shortcut. A second function that
+// recomputed these values would be a second implementation of every "how long
+// ago" on the page, and the two would drift - quietly, in a number, which is
+// the worst place in this codebase for anything to drift. Building a string and
+// discarding it costs microseconds; the expense being avoided is the DOM.
+let TICKS = null;
+
+// Marks the element whose ENTIRE text content is `text`. Returns an attribute,
+// so it can be dropped into an element that already has a class.
+function tickData(key, text) {
+    if (TICKS) TICKS.set(key, text);
+    return ` data-tick="${escapeHtml(key)}"`;
+}
+
+// The same thing as a self-contained span, for a value inside a sentence.
+function tick(key, text) {
+    return `<span${tickData(key, text)}>${escapeHtml(text)}</span>`;
+}
+
+function collectTicks(state) {
+    const prev = TICKS;
+    TICKS = new Map();
+    try {
+        stagesHtml(state);
+        logsHtml(state);
+        return TICKS;
+    } finally {
+        TICKS = prev;
+    }
+}
+
+function retick(state) {
+    const values = collectTicks(state);
+    document.querySelectorAll('[data-tick]').forEach((el) => {
+        const v = values.get(el.getAttribute('data-tick'));
+        // undefined means this node's key is gone from the payload, which
+        // cannot happen without a structural change - so leave the node alone
+        // rather than blanking it on a reading we do not have.
+        if (v !== undefined && el.textContent !== v) el.textContent = v;
+    });
+}
+
+// -- (2) THE PLAYBILL NEVER RE-RENDERS --------------------------------------
+//
+// `resolved` is stamped ONCE at build start and is immutable for the life of
+// the run - `build_id` is its digest, and that is what makes this true by
+// construction rather than by heuristic. So even when (1) decides something
+// real changed, the playbill is not rebuilt unless build_id changed: the live
+// <aside> is lifted out before innerHTML destroys it and put straight back,
+// with .pb-body's scrollTop restored. Cheapest correct fix for "you could be
+// mid review near the bottom then BOOP, up to the top you go."
+//
+// Keyed by rung path AND build_id, not build_id alone: two stages can be
+// running the same recipe, and one panel being adopted into the other's slot
+// would leave the second empty.
+let KEPT_PLAYBILLS = new Set();
+
 function showError(html) { $('error-slot').innerHTML = `<div class="err">${html}</div>`; }
 function clearError() { $('error-slot').innerHTML = ''; }
 
@@ -165,7 +313,9 @@ function renderSteps(key, m, log) {
             s.started
                 ? `<div class="det">started ${escapeHtml(fmtWhen(s.started))}${
                     s.ended ? ` · ended ${escapeHtml(fmtWhen(s.ended))}` : ''}${
-                    s.elapsed != null ? ` · ${escapeHtml(fmtDur(s.elapsed))}` : ''
+                    s.elapsed != null
+                        ? ` · ${tick(`step-elapsed:${key}:${s.id}`,
+                                     fmtDur(s.elapsed))}` : ''
                   }</div>`
                 : '',
             s.status === 'running' ? renderStepLog(log) : '',
@@ -181,7 +331,9 @@ function renderSteps(key, m, log) {
             <div class="step-head">
                 <span class="twisty">▾</span>
                 <span class="label">${escapeHtml(s.label)}</span>
-                <span class="meta">${escapeHtml(right)}</span>
+                <span class="meta"${
+                    tickData(`step-meta:${key}:${s.id}`, right)
+                }>${escapeHtml(right)}</span>
                 <span class="glyph" title="${escapeHtml(s.status)}">${glyph}</span>
             </div>
             <div class="step-body">${detail
@@ -205,24 +357,47 @@ function renderSteps(key, m, log) {
 // mtime can support. So: print the readings - manifest quiet 46m · log
 // wrote 3s ago - and let the reader draw it. The server decided the state
 // (sources.activity_state); this only says what the numbers were.
+// (4) Grammar, not decoration. "log wrote 3s ago" reads fine; "artifacts wrote
+// 3s ago" does not, because sources.rung_activity's reading is a DIRECTORY - a
+// set of files, and often a set of one that is itself a subdirectory. A role
+// not named here keeps the original phrasing, so a future evidence source shows
+// up readable instead of requiring an edit here first.
+const ACTIVITY_PHRASE = {
+    artifacts: (age) => `artifacts written ${age} ago`,
+};
+const ACTIVITY_ABSENT = {
+    artifacts: 'the run directory is not there to read',
+};
+
 function renderQuiet(r) {
     const q = r.quiet;
     if (!q || q.manifest_quiet_for == null) return '';
     if (q.manifest_quiet_for <= q.after_seconds) return '';
     const reads = [`manifest quiet ${fmtDur(q.manifest_quiet_for)}`].concat(
         (q.files || []).map((f) => (f.exists && f.quiet_for != null)
-            ? `${f.role} wrote ${fmtDur(f.quiet_for)} ago`
-            : `${f.role} file never appeared`));
-    const line = `<div class="reads">${escapeHtml(reads.join(' · '))}</div>`;
+            ? (ACTIVITY_PHRASE[f.role]
+                || ((age) => `${f.role} wrote ${age} ago`))(fmtDur(f.quiet_for))
+            : (ACTIVITY_ABSENT[f.role] || `${f.role} file never appeared`)));
+    // (1) The whole line is one tick node: every number in it is an age, and
+    // none of them can move without the payload moving structurally.
+    const readsText = reads.join(' · ');
+    const line = `<div class="reads"${
+        tickData(`quiet-reads:${r.path}`, readsText)}>${
+        escapeHtml(readsText)}</div>`;
     if (q.recent_write) {
         return `<div class="quiet">The manifest has not been rewritten in
-            ${escapeHtml(fmtDur(q.manifest_quiet_for))} — it is written on stage
+            ${tick(`quiet-manifest:${r.path}`, fmtDur(q.manifest_quiet_for))} — it
+            is written on stage
             transitions, and a fine-tune stage runs for about an hour. Something
             in this directory is still being written.${line}</div>`;
     }
+    // "not the log" alone stopped being the whole story the moment the rung
+    // directory became evidence: on a hand-run build there IS no log, and the
+    // sentence has to name what was actually looked at.
     return `<div class="err">Nothing here has been written for
-        ${escapeHtml(fmtDur(q.newest_activity_for))} — not the manifest, not the
-        log. That is a reading and not a verdict: a stat() cannot tell you
+        ${tick(`quiet-newest:${r.path}`, fmtDur(q.newest_activity_for))} — not the
+        manifest, not the log, and nothing new in the run directory. That is a
+        reading and not a verdict: a stat() cannot tell you
         whether the process is alive.${line}</div>`;
 }
 
@@ -269,16 +444,53 @@ const PLAYBILL_GROUPS = [
     ['eval', ['eval_'], []],
 ];
 
+// (3) WRAP AT THE SEPARATORS, NOT ANYWHERE.
+//
+// The reported symptom was a defaults path rendering as
+//
+//     /mnt/nvme/msMoEMake
+//     r/lib/python3.12/site-
+//     packages/ms_moe_make
+//     r/assets/defaults.yaml
+//
+// Two faults stacked. It sat in a 42%-wide value column, AND `overflow-wrap:
+// anywhere` broke it MID-TOKEN, which is what makes it look broken rather than
+// merely long. To a beginner that reads as a bug in the tool.
+//
+// `<wbr>` gives the wrapper legal places to break, so it takes those instead of
+// inventing illegal ones. `overflow-wrap: anywhere` stays in the CSS as the
+// backstop for a single segment wider than its column - the difference is that
+// it is now the last resort rather than the first.
+//
+// ESCAPE FIRST, THEN INSERT. The other order feeds the markup through
+// escapeHtml and renders `<wbr>` as visible text - and this string is a
+// filesystem path out of a manifest somebody else wrote, which is what makes
+// the escaping the part that is not negotiable. Safe in this order because no
+// entity escapeHtml produces contains `/` or a backslash.
+function breakablePath(p) {
+    return escapeHtml(String(p))
+        .replace(/\//g, '/<wbr>')
+        .replace(/\\/g, '\\<wbr>');
+}
+
 function pbValue(v) {
     if (v === null || v === undefined) return '<span class="hint">null</span>';
     if (Array.isArray(v)) {
+        // Joined with ', ' already, so the spaces are break opportunities and
+        // expert_names / target_modules wrap fine as they are. Left alone on
+        // purpose: reformatting a value that reads correctly is churn.
         return v.length ? escapeHtml(v.join(', '))
                         : '<span class="hint">(empty)</span>';
     }
     if (typeof v === 'object') return `<code>${escapeHtml(JSON.stringify(v))}</code>`;
     if (typeof v === 'boolean') return v ? 'true' : 'false';
     if (v === '') return '<span class="hint">(blank)</span>';
-    return escapeHtml(String(v));
+    // The same problem one column over and the same fix: `base` is a model id
+    // like Qwen/Qwen2.5-Coder-14B-Instruct, and every base_* and path-shaped
+    // value has separators worth breaking at. A value with none is untouched.
+    const s = String(v);
+    if (s.includes('/') || s.includes('\\')) return breakablePath(s);
+    return escapeHtml(s);
 }
 
 function pbBlock(label, keys, res) {
@@ -288,7 +500,18 @@ function pbBlock(label, keys, res) {
         + `</dl></div>`;
 }
 
-function renderPlaybill(m) {
+function renderPlaybill(m, rungPath) {
+    // (2) The panel is immutable for the life of a build. `key` is what decides
+    // whether the live node gets adopted instead of rebuilt - see renderStages.
+    const key = m.build_id ? `${rungPath} ${m.build_id}` : '';
+    if (key && KEPT_PLAYBILLS.has(key)) {
+        // A placeholder. renderStages swaps the existing <aside> - and its
+        // scroll position - back into this slot.
+        return `<aside class="playbill" data-playbill="${escapeHtml(key)}"></aside>`;
+    }
+    // Nothing in this panel is clock-derived, so the tick-collecting pass has
+    // no reason to build it at all. See collectTicks.
+    if (TICKS) return '';
     const res = m.resolved || {};
     const keys = Object.keys(res);
     const files = m.defaults_files || {};
@@ -296,7 +519,7 @@ function renderPlaybill(m) {
     if (!keys.length && !fkeys.length && !m.build_id) {
         // A true reading, not an error: an older writer, or a directory
         // somebody redirected a log into with no pipeline cooperating at all.
-        return `<aside class="playbill"><h4>Playbill</h4>
+        return `<aside class="playbill" data-playbill=""><h4>Playbill</h4>
             <div class="empty">This run's manifest carries no resolved config,
             so there is nothing to show here. That is a reading, not a
             failure — the run is watchable either way.</div></aside>`;
@@ -313,17 +536,37 @@ function renderPlaybill(m) {
     // The short hash beside each defaults file is the point of showing them at
     // all: it says WHICH version of that file this run inherited, which the
     // path alone cannot, because the file has probably been edited since.
+    // (3) A FULL-WIDTH ROW, NOT A KEY/VALUE PAIR.
+    //
+    // A defaults path is not a short key beside a short value; it is one long
+    // string that needs the whole panel. In the 42%/58% kv grid it had nowhere
+    // to go but down, four characters at a time.
+    //
+    // THE PATH, not the basename. Two defaults files in different directories
+    // are both called defaults.yaml, and showing only the name rendered them as
+    // the same file with two different hashes - which reads as a contradiction
+    // rather than as two files. So the FILENAME leads, because that is the
+    // readable thing, and the full path sits under it as the context that tells
+    // the two apart.
+    //
+    // AND THE HASH IS LABELLED. `3f0e3b6c1432` on its own reads like an id. It
+    // is the first 12 hex of the sha256 of that FILE'S CONTENTS, and the
+    // writer's own docstring says why that is worth conveying: "a build id says
+    // two runs differ; this says WHICH file on which box was different, which
+    // is the question somebody actually has at 2am when their run and yours
+    // disagree." A bare hex blob answers none of that.
     const defaults = fkeys.length
-        // THE PATH, not the basename. Two defaults files in different
-        // directories are both called defaults.yaml, and showing only the name
-        // rendered them as the same file with two different hashes - which
-        // reads as a contradiction rather than as two files.
-        ? `<div class="pb-group"><h5>defaults inherited</h5><dl class="kv">`
-          + fkeys.map((f) => `<dt>${escapeHtml(f)}</dt>`
-              + `<dd><code>${escapeHtml(String(files[f]))}</code></dd>`).join('')
-          + `</dl></div>`
+        ? `<div class="pb-group pb-defaults"><h5>defaults inherited</h5>`
+          + fkeys.map((f) => `<div class="pb-file">
+                <div class="pb-file-name">${escapeHtml(base(f))}</div>
+                <div class="pb-file-path">${breakablePath(f)}</div>
+                <div class="pb-file-hash"><span class="hint">sha256 · first 12</span>
+                    <code title="sha256 of this file's contents, first 12 hex — which version of it this run inherited">${
+                        escapeHtml(String(files[f]))}</code></div>
+            </div>`).join('')
+          + `</div>`
         : '';
-    return `<aside class="playbill">
+    return `<aside class="playbill" data-playbill="${escapeHtml(key)}">
         <h4>Playbill${m.build_id
             ? ` <code title="digest of the resolved config">${
                 escapeHtml(m.build_id)}</code>` : ''}</h4>
@@ -440,11 +683,16 @@ function renderLaunch(s) {
         ? `${f.role} last wrote ${fmtAge(f.mtime)} · ${fmtBytes(f.size)}`
         : `${f.role} file never appeared`).join(' · ');
 
+    // Joined UNESCAPED and escaped once at the end, because the tick registry
+    // holds the text a node will later be handed via textContent - giving it an
+    // already-escaped string would put a literal &amp; on the page five seconds
+    // after the correct character. Identical output either way: the separator
+    // has nothing escapable in it.
     const rows = [
         L.started ? `launched ${fmtAge(L.started)}` : null,
         L.pid != null ? `pid ${L.pid}` : null,
         L.recipe ? `recipe ${base(L.recipe)}` : null,
-    ].filter(Boolean).map(escapeHtml).join(' · ');
+    ].filter(Boolean).join(' · ');
 
     // An exit code is recorded whenever the child was already gone - which
     // includes the good case, where it is 0. So it gets said in words here
@@ -480,8 +728,12 @@ function renderLaunch(s) {
             ? `<div class="sub"><code>${escapeHtml(L.command_line)}</code></div>`
             : ''}
         <div class="card-body">${dead}
-            ${rows ? `<div class="launch-row">${rows}</div>` : ''}${ended}
-            ${acts ? `<div class="launch-row">${escapeHtml(acts)}</div>` : ''}
+            ${rows ? `<div class="launch-row"${
+                tickData(`launch-rows:${s.name}`, rows)}>${
+                escapeHtml(rows)}</div>` : ''}${ended}
+            ${acts ? `<div class="launch-row"${
+                tickData(`launch-acts:${s.name}`, acts)}>${
+                escapeHtml(acts)}</div>` : ''}
             ${unsure}${schema}
         </div></div>`;
 }
@@ -515,7 +767,7 @@ function renderRung(r, log) {
         const done = state === 'finished';
         const body = `<div class="run"><div class="run-main">${renderQuiet(r)}${
             renderSteps(r.path, m, log)}${renderRefusals(m)}</div>${
-            renderPlaybill(m)}</div>`;
+            renderPlaybill(m, r.path)}</div>`;
         return card(r.path, escapeHtml(m.name || r.name), badge, sub, body, done);
     }
 
@@ -545,18 +797,20 @@ function renderRung(r, log) {
                 '', body, false);
 }
 
-function renderStages(state) {
-    const host = $('stages-body');
+// PURE STRING BUILDERS, and the split is load-bearing rather than tidying:
+// collectTicks re-runs these to recompute the elapsed-time text without going
+// anywhere near the DOM. A renderer that wrote to the page could not be used
+// that way, and a second copy of the calculations would drift.
+function stagesHtml(state) {
     if (!state.stages.length) {
-        host.innerHTML = `<div class="empty">
+        return `<div class="empty">
             <b>The room is empty.</b><br>
             No stages configured — which is a true reading, not an error.<br>
             Set <code>SEREN_THEATRE_STAGE=/path/to/lab</code>, or add a
             <code>stages:</code> block to your config.
         </div>`;
-        return;
     }
-    host.innerHTML = state.stages.map((s) => {
+    return state.stages.map((s) => {
         if (!s.exists) {
             return `<div class="card"><h3>${escapeHtml(s.name)}</h3>
                 <div class="card-body"><div class="err">Directory not found:
@@ -591,6 +845,39 @@ function renderStages(state) {
     }).join('');
 }
 
+// (2) Lift the playbills out, rebuild everything else, put them back.
+//
+// The rescue has to happen BEFORE innerHTML, and the scrollTop has to be read
+// while the node still has a box - a detached element reports 0 and forgets
+// where it was. So: measure, replace, re-insert, restore.
+function renderStages(state) {
+    const host = $('stages-body');
+    const kept = new Map();
+    host.querySelectorAll('aside.playbill[data-playbill]').forEach((el) => {
+        const key = el.getAttribute('data-playbill');
+        if (!key) return;               // no build_id: nothing to key on
+        const body = el.querySelector('.pb-body');
+        kept.set(key, { el, scroll: body ? body.scrollTop : 0 });
+    });
+    KEPT_PLAYBILLS = new Set(kept.keys());
+    let html;
+    try {
+        html = stagesHtml(state);
+    } finally {
+        // Cleared unconditionally: leaving it set would make the NEXT caller -
+        // collectTicks, say - emit placeholders nobody is going to fill in.
+        KEPT_PLAYBILLS = new Set();
+    }
+    host.innerHTML = html;
+    host.querySelectorAll('aside.playbill[data-playbill]').forEach((el) => {
+        const old = kept.get(el.getAttribute('data-playbill'));
+        if (!old) return;               // a new build_id: the fresh one stands
+        el.replaceWith(old.el);
+        const body = old.el.querySelector('.pb-body');
+        if (body) body.scrollTop = old.scroll;
+    });
+}
+
 // -- logs -------------------------------------------------------------------
 
 function renderLog(l) {
@@ -608,14 +895,17 @@ function renderLog(l) {
         ['rate', st.rate],
         ['eta', st.eta],
         ['size', fmtBytes(l.size)],
-        ['modified', fmtAge(l.mtime)],
+        // The third slot is a tick key: this row is an AGE, and it is the only
+        // thing in this card that moves between two identical polls.
+        ['modified', fmtAge(l.mtime), `log-modified:${l.path}`],
     ].filter(([, v]) => v != null && v !== '')
-        .map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(String(v))}</dd>`)
+        .map(([k, v, tk]) => `<dt>${k}</dt><dd${
+            tk ? tickData(tk, String(v)) : ''}>${escapeHtml(String(v))}</dd>`)
         .join('');
 
     const stalled = l.stalled_for
         ? `<div class="err">No new output for
-           ${escapeHtml(fmtDur(l.stalled_for))}.</div>` : '';
+           ${tick(`log-stalled:${l.path}`, fmtDur(l.stalled_for))}.</div>` : '';
     const warns = (l.warnings || []).length
         ? `<ul class="warnlist">${l.warnings.map(
             (w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul>` : '';
@@ -628,16 +918,15 @@ function renderLog(l) {
                 false);
 }
 
-function renderLogs(state) {
+function logsHtml(state) {
     const logs = state.stages.flatMap((s) => s.logs || []);
-    const host = $('logs-body');
     if (!logs.length) {
         // Say WHERE it looked and WHAT for. "No logs found" on its own sends
         // you to check whether the tab is broken; naming the directory and the
         // pattern sends you to check the thing that is actually wrong.
         const where = state.stages.map(
             (s) => `<li><code>${escapeHtml(s.path)}</code></li>`).join('');
-        host.innerHTML = `<div class="empty">
+        return `<div class="empty">
             <b>No logs found.</b><br>
             Looked in:<ul style="list-style:none;padding:0">${where || '<li>(no stages)</li>'}</ul>
             for the <code>logs:</code> globs in your config (default
@@ -645,9 +934,12 @@ function renderLogs(state) {
             Redirect a run into a watched directory and it appears here —
             nothing needs instrumenting.
         </div>`;
-        return;
     }
-    host.innerHTML = logs.map(renderLog).join('');
+    return logs.map(renderLog).join('');
+}
+
+function renderLogs(state) {
+    $('logs-body').innerHTML = logsHtml(state);
 }
 
 // -- the loop ---------------------------------------------------------------
@@ -675,8 +967,20 @@ async function load() {
         $('count-stages').textContent = rungs.length ? `(${rungs.length})` : '';
         $('count-logs').textContent = logs.length ? `(${logs.length})` : '(0)';
 
-        renderStages(state);
-        renderLogs(state);
+        // (1) The whole point. During a 58-minute fine-tune the manifest is not
+        // rewritten once, so ~700 consecutive polls carry a structurally
+        // identical board - and all 700 used to rebuild the page and throw the
+        // reader back to the top of whatever they were reading.
+        const signature = structuralSignature(state);
+        if (signature === LAST_SIGNATURE) {
+            retick(state);
+        } else {
+            renderStages(state);
+            renderLogs(state);
+            // Set AFTER the render, so a renderer that threw leaves the next
+            // poll trying again rather than believing the page is current.
+            LAST_SIGNATURE = signature;
+        }
 
         if (state.refresh_seconds) REFRESH_MS = state.refresh_seconds * 1000;
     } catch (e) {

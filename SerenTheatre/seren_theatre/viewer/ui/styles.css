@@ -234,9 +234,40 @@ body { font-size: 14px; }
 }
 .pb-group .kv { grid-template-columns: minmax(0, 42%) minmax(0, 1fr);
                 gap: 1px 10px; font-size: 12px; }
+/* `anywhere` is the BACKSTOP, not the plan. It is what broke a defaults path
+   through the middle of `msMoEMaker`, and it is still here because a single
+   segment wider than its column has to go somewhere other than out of the
+   panel. What changed is that pbValue now emits <wbr> after every path
+   separator, so the wrapper has legal break points to prefer and only falls
+   back to this when a lone segment genuinely does not fit. */
 .pb-group .kv dt,
 .pb-group .kv dd { overflow-wrap: anywhere; }
 .pb-group .kv dd { color: var(--muted); }
+
+/* -- defaults inherited: a full-width row, not a key/value pair ------------ */
+/* A path is not a short key beside a short value. In the 42%/58% grid above it
+   had nowhere to go but down, four characters at a time, and to a beginner that
+   reads as the tool being broken rather than the path being long. So this block
+   leaves the grid entirely and takes the width of the panel.
+   Filename first, because that is the readable thing; path underneath as the
+   context that tells two files called defaults.yaml apart; the hash labelled,
+   because a bare hex blob reads like an id rather than like the answer to
+   "which version of that file did this run inherit". */
+.pb-defaults .pb-file + .pb-file {
+    margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line);
+}
+.pb-file-name { font-size: 12px; color: var(--muted); }
+.pb-file-path {
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--faint);
+    margin-top: 1px;
+    /* Same bargain as the kv cells: the <wbr>s do the work, and this catches a
+       segment that cannot fit even at full width. */
+    overflow-wrap: anywhere;
+}
+.pb-file-hash { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.pb-file-hash .hint { font-size: 10px; letter-spacing: .04em; }
+.pb-file-hash code { margin-left: 5px; }
 
 /* -- staleness, reported rather than concluded ---------------------------- */
 /* The quiet-but-still-writing case is NOT an error and must not be painted as
