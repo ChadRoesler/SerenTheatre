@@ -19,6 +19,7 @@ stageguard's invariant is untouched.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -592,12 +593,146 @@ def test_a_quiet_manifest_beside_a_live_log_is_not_reported_stalled(tmp_path):
 def test_a_run_that_really_did_go_quiet_still_says_so(tmp_path):
     stage = _stage(tmp_path)
     started = time.time() - 4 * 3600
-    _instrumented(stage, "dryrun_0.5B", started,
-                  stages=[{"id": "finetune.python", "label": "Fine-tune python",
-                           "status": "running", "started": started}])
+    run = _instrumented(stage, "dryrun_0.5B", started,
+                        stages=[{"id": "finetune.python",
+                                 "label": "Fine-tune python",
+                                 "status": "running", "started": started}])
+    # The rung DIRECTORY is evidence now (sources.rung_activity), so a fixture
+    # that claims four hours of silence has to actually be four hours old. It
+    # was written a millisecond ago and claiming otherwise in the manifest,
+    # which no real run does: the manifest write is what set the directory
+    # mtime. Backdating makes the fixture model the run it is named for. The
+    # assertions below are untouched.
+    _backdate(run, started)
     current = _scan(stage)["rungs"][0]
     assert current["state"] == "stalled"
     assert current["state_source"] == "manifest"
+
+
+# ── ④ the rung directory is evidence too ────────────────────────────────────
+#
+# THE LIE THIS REPLACES, and it is ② all over again: the evidence was on disk
+# and nobody looked. A build run BY HAND sends stdout to the terminal, so there
+# is no `*.log` in the stage and stagehand dropped no marker - activity_files
+# found nothing, and a router training at 3157/4000 at 3.47 s/it was reported,
+# in red, as "Nothing here has been written for 2h 42m".
+#
+# Meanwhile the rung directory was churning: `tmp_<expert>/checkpoint-N/`,
+# `moe_trained/`, the stitch and export artifacts, all immediate children, and
+# creating a subdirectory bumps its parent's mtime.
+#
+# THE CONSERVATISM IS UNCHANGED. This is one more source of POSITIVE evidence;
+# absent evidence still leaves the manifest's word exactly where it was.
+
+
+def _backdate(path: Path, when: float) -> None:
+    """Age a fixture directory and everything directly in it. A test helper."""
+    os.utime(path, (when, when))
+    for child in path.iterdir():
+        os.utime(child, (when, when))
+
+
+def test_a_churning_rung_directory_is_a_reading(tmp_path):
+    """THE HAND-RUN CASE, pinned. No log, no marker, and the run is alive."""
+    rung = tmp_path / "dryrun_0.5B"
+    (rung / "tmp_python" / "checkpoint-3157").mkdir(parents=True)
+    out = sources.rung_activity(rung)
+    assert out["role"] == sources.ARTIFACTS_ROLE
+    assert out["exists"] is True
+    assert out["since"] < 60
+    assert out["entries"] == 1
+
+
+def test_a_quiet_rung_directory_is_also_a_reading(tmp_path):
+    rung = tmp_path / "dryrun_0.5B"
+    (rung / "moe_trained").mkdir(parents=True)
+    _backdate(rung, time.time() - 4 * 3600)
+    out = sources.rung_activity(rung)
+    assert out["exists"] is True
+    assert out["since"] > 3 * 3600
+
+
+def test_a_rung_directory_that_is_not_there_is_reported_not_guessed(tmp_path):
+    out = sources.rung_activity(tmp_path / "never-existed")
+    assert out["exists"] is False
+    assert out["mtime"] is None and out["since"] is None
+
+
+def test_no_rung_means_exactly_the_two_readings_there_always_were(tmp_path):
+    """The default is the old behaviour, so every existing caller is unmoved."""
+    stage = _stage(tmp_path)
+    (stage / "msmoe-x.log").write_text("x", encoding="utf-8")
+    parsed = [sources.parse_run_log(stage / "msmoe-x.log", 4096)]
+    assert [f["role"] for f in sources.activity_files(None, parsed)] == ["log"]
+
+
+def test_the_artifacts_reading_is_its_own_row_and_not_folded_into_the_log(tmp_path):
+    stage = _stage(tmp_path)
+    (stage / "msmoe-x.log").write_text("x", encoding="utf-8")
+    rung = stage / "dryrun_0.5B"
+    rung.mkdir()
+    parsed = [sources.parse_run_log(stage / "msmoe-x.log", 4096)]
+    roles = [f["role"] for f in sources.activity_files(None, parsed, rung)]
+    assert roles == ["log", sources.ARTIFACTS_ROLE], (
+        "the rung directory was merged into the log's reading, which would "
+        "report 'the log wrote 14s ago' about a run that has no log")
+
+
+def test_the_artifacts_reading_names_no_conclusion(tmp_path):
+    """Same line test_the_quiet_reading_claims_neither_alive_nor_dead holds one
+    reading over. A stat() on a directory cannot tell you a process is alive."""
+    rung = tmp_path / "dryrun_0.5B"
+    rung.mkdir()
+    out = sources.rung_activity(rung)
+    for forbidden in ("alive", "dead", "killed", "stalled", "state", "status",
+                      "running", "finished"):
+        assert forbidden not in out
+
+
+def test_a_hand_run_build_with_no_log_is_no_longer_reported_stalled(tmp_path):
+    """END TO END, on the exact shape the author was looking at: a manifest
+    quiet for hours, no log in the stage, no marker, and checkpoints landing in
+    the rung directory the whole time."""
+    stage = _stage(tmp_path)
+    started = time.time() - 4 * 3600
+    run = _instrumented(stage, "dryrun_0.5B", started,
+                        stages=[{"id": "router", "label": "Train router",
+                                 "status": "running", "started": started}])
+    _backdate(run, started)
+    (run / "moe_trained").mkdir()          # written seconds ago, like a live run
+    current = _scan(stage)["rungs"][0]
+    assert current["manifest"]["state"] == "stalled", (
+        "the manifest-only reading is unchanged and still says what it says")
+    assert current["state"] == "running"
+    assert current["state_source"] == "manifest + file activity"
+    roles = [f["role"] for f in current["quiet"]["files"]]
+    assert sources.ARTIFACTS_ROLE in roles
+
+
+def test_the_rung_directory_is_read_one_level_deep_and_no_further(
+        tmp_path, monkeypatch):
+    """~45 GB of shards live under here. ONE scandir, then stat the entries.
+
+    Counted rather than asserted in prose: a recursive walk would scale with
+    the tree, and the whole promise is that this scales with the top level
+    only. The README calls a dashboard that makes the box busy "an unusually
+    stupid way to perturb a measurement", so this is the check that keeps it
+    from becoming one.
+    """
+    rung = tmp_path / "dryrun_0.5B"
+    for expert in ("python", "rust", "go"):
+        for step in range(20):
+            (rung / f"tmp_{expert}" / f"checkpoint-{step}" / "deep").mkdir(
+                parents=True)
+    scanned = []
+    real_scandir = os.scandir
+    monkeypatch.setattr(os, "scandir",
+                        lambda p: (scanned.append(str(p)), real_scandir(p))[1])
+    out = sources.rung_activity(rung)
+    assert out["entries"] == 3, "the top level is three tmp_* directories"
+    assert scanned == [str(rung)], (
+        f"the reader descended into {len(scanned)} directories - something "
+        f"started recursing, and this tree is 45 GB of shards")
 
 
 def test_the_room_no_longer_concludes_the_process_was_killed():

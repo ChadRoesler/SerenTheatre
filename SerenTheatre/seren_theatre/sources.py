@@ -682,8 +682,84 @@ def scan_rung(root: Path) -> Dict[str, Any]:
 # hour-long stage, twice watched.
 
 
+ARTIFACTS_ROLE = "artifacts"
+
+
+def rung_activity(rung: Optional[Path]) -> Optional[Dict[str, Any]]:
+    """The rung directory's OWN churn, as one reading. Never raises.
+
+    WHY THIS EXISTS, and it is the same bug as the one above wearing different
+    clothes: the evidence was on disk and nobody looked. A build run by hand in
+    a terminal sends stdout to the TERMINAL. There is no `*.log` in the stage
+    and stagehand dropped no marker, so `activity_files` finds nothing at all -
+    and a live router training at 3157/4000 at 3.47 s/it read, in red, "Nothing
+    here has been written for 2h 42m - not the manifest, not the log."
+
+    But the rung directory is CHURNING the whole time. Fine-tune writes
+    `tmp_<expert>/checkpoint-N/`, the router writes into `moe_trained/`, and
+    stitch, abliterate and export all drop artifacts. Every one of those is an
+    immediate child of the rung directory, and CREATING A SUBDIRECTORY BUMPS
+    ITS PARENT'S MTIME - so the directory itself plus one level of children
+    catches all of it for the price of one readdir.
+
+    ONE scandir, THEN stat the entries. NO RECURSION, and that is not a
+    performance nicety - that tree holds ~45 GB of shards across thousands of
+    files, and the README is blunt about it: "the dashboard must never be the
+    reason the box is busy - that would be an unusually stupid way to perturb a
+    measurement." A recursive walk here would be exactly that.
+
+    THE OVERLAP WITH THE MANIFEST IS DELIBERATE AND INERT. The manifest lives
+    in this directory, so creating it bumped the directory mtime too - this can
+    never be fully independent of the reading it seconds. It does not matter:
+    `activity_state` only ever consults this when the manifest has ALREADY been
+    quiet longer than the window, and a manifest that was written 46 minutes
+    ago left a 46-minute-old directory mtime behind it. The overlapping half is
+    always outside the window by construction.
+
+    KNOWN GAP, LEFT VISIBLY UNSOLVED. Corpus collection writes into a SIBLING
+    of the rung - `gauntlet-data/{size}` - not into the rung itself, and
+    `data_root` sits in the writer's `_FINGERPRINT_EXCLUDE`, so `resolved`
+    cannot tell Theatre where that directory went. A long shard scan therefore
+    still reads as stalled here. That is a gap and not a bug, and it is left
+    open on purpose: guessing at sibling paths by name would be inventing a
+    reading, which is the one thing this module never does.
+
+    lstat, not stat: a symlinked child must not send this off following a link
+    to an NFS mount to answer a question about local churn.
+    """
+    if rung is None:
+        return None
+    path = Path(rung)
+    reading: Dict[str, Any] = {"role": ARTIFACTS_ROLE, "path": str(path),
+                               "exists": False, "mtime": None, "size": None,
+                               "since": None, "entries": 0}
+    try:
+        newest: Optional[float] = path.stat().st_mtime
+    except OSError:
+        # Absent or unreadable is a real reading, and reported AS one - the
+        # same discipline _file_activity already takes with a named file.
+        return reading
+    entries = 0
+    try:
+        with os.scandir(path) as scan:
+            for entry in scan:
+                entries += 1
+                try:
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue        # one unreadable child is not the answer
+                if st.st_mtime > newest:
+                    newest = st.st_mtime
+    except OSError:
+        pass                        # the directory's own mtime still stands
+    reading.update({"exists": True, "mtime": newest, "entries": entries,
+                    "since": max(0.0, time.time() - newest)})
+    return reading
+
+
 def activity_files(launch: Optional[Dict[str, Any]],
-                   logs: List[RunLog]) -> List[Dict[str, Any]]:
+                   logs: List[RunLog],
+                   rung: Optional[Path] = None) -> List[Dict[str, Any]]:
     """The files whose mtimes bear on whether anything is still happening.
 
     Reuses read_launch's per-file machinery rather than growing a second one -
@@ -696,6 +772,15 @@ def activity_files(launch: Optional[Dict[str, Any]],
     NEWEST LOG ONLY. An older log in the same directory belongs to a previous
     run, and reading a finished run's log as evidence about this one is the
     cross-attribution mistake this module refuses to make everywhere else.
+
+    THE RUNG DIRECTORY IS THE THIRD SOURCE, and it is the one that covers the
+    hand-run case the other two miss entirely - see rung_activity. It is kept
+    as its OWN reading under its own role rather than folded into "the log",
+    because "artifacts written 14s ago" and "the log wrote 14s ago" are
+    different sentences and only one of them is true when there is no log.
+
+    `rung` is optional so a caller with no rung in hand - and every existing
+    one - gets exactly the two readings it always got.
     """
     out: List[Dict[str, Any]] = []
     seen: set = set()
@@ -710,6 +795,10 @@ def activity_files(launch: Optional[Dict[str, Any]],
             continue
         seen.add(entry.path)
         out.append(_file_activity(entry.path, "log"))
+    artifacts = rung_activity(rung)
+    if artifacts is not None and artifacts["path"] not in seen:
+        seen.add(artifacts["path"])
+        out.append(artifacts)
     return out
 
 
@@ -843,7 +932,8 @@ def scan_stage(name: str, root: Path, log_globs: List[str],
         found = current.get("manifest")
         if found is not None:
             quiet = quiet_reading(found.get("updated"),
-                                  activity_files(launch, logs))
+                                  activity_files(launch, logs,
+                                                 Path(current["path"])))
             current["quiet"] = quiet
             current["state"] = activity_state(found.get("state"), quiet)
             # Which readings decided the word above. Same honesty as `source`
