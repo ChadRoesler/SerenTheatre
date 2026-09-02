@@ -218,3 +218,78 @@ def test_an_empty_directory_that_merely_matches_is_not_a_rung(tmp_path):
     d = tmp_path / "dryrun_junk"
     d.mkdir()
     assert looks_like_rung(d) is False
+
+
+# -- the playbill fields, which this reader used to throw away ---------------
+#
+# `resolved`, `defaults_files` and `build_id` are stamped by the writer and the
+# dataclass here simply stopped at `refusals`, so all three were parsed past in
+# silence. The writer's comment says additive fields are safe because "unknown
+# keys already fall through to `extra`" - true of its own reader, and the thing
+# this reader did not have. Both halves are pinned below.
+
+RESOLVED = {"size": "0.5B", "target_steps": 602,
+            "expert_names": ["python", "csharp"]}
+DEFAULTS = {"/etc/msmoe/defaults.yaml": "9f2a1c0b7d31"}
+
+
+def test_the_resolved_config_is_carried(tmp_path):
+    write(tmp_path, minimal(build_id="abc123def456", resolved=RESOLVED,
+                            defaults_files=DEFAULTS))
+    m = mf.read(tmp_path)
+    assert m.build_id == "abc123def456"
+    assert m.resolved == RESOLVED
+    assert m.defaults_files == DEFAULTS
+
+
+def test_absent_playbill_fields_read_as_empty_not_as_missing(tmp_path):
+    """An older writer stamps none of them, and that is not an error - it is a
+    run with no playbill to show."""
+    write(tmp_path, minimal())
+    m = mf.read(tmp_path)
+    assert m.build_id == ""
+    assert m.resolved == {}
+    assert m.defaults_files == {}
+
+
+@pytest.mark.parametrize("bad", ["a string", 12, ["a", "list"], None, True])
+def test_a_playbill_field_of_the_wrong_type_reads_as_empty(tmp_path, bad):
+    """Lenient in the same direction as the rest of this module. A `resolved`
+    that is a string is a writer bug, and an empty playbill is a far smaller
+    failure than refusing to show the run at all."""
+    write(tmp_path, minimal(resolved=bad, defaults_files=bad, build_id=bad))
+    m = mf.read(tmp_path)
+    assert m.resolved == {}
+    assert m.defaults_files == {}
+
+
+def test_defaults_files_are_coerced_to_strings_both_sides(tmp_path):
+    write(tmp_path, minimal(defaults_files={"/etc/d.yaml": 12345}))
+    assert mf.read(tmp_path).defaults_files == {"/etc/d.yaml": "12345"}
+
+
+def test_an_unknown_key_lands_in_extra_rather_than_vanishing(tmp_path):
+    """The structural half of the fix. Three fields have now been dropped one
+    at a time; this is what stops the fourth."""
+    write(tmp_path, minimal(gpu_hours=12.5, cluster="nano8gb"))
+    m = mf.read(tmp_path)
+    assert m.extra == {"gpu_hours": 12.5, "cluster": "nano8gb"}
+
+
+def test_a_key_this_reader_does_know_never_lands_in_extra(tmp_path):
+    """Otherwise `extra` would quietly duplicate the whole manifest, and a
+    duplicate is how two readings of one field start to disagree."""
+    write(tmp_path, minimal(build_id="abc", resolved=RESOLVED))
+    assert mf.read(tmp_path).extra == {}
+
+
+def test_as_dict_serves_the_playbill_and_the_catch_all(tmp_path):
+    write(tmp_path, minimal(build_id="abc123def456", resolved=RESOLVED,
+                            quantiser="q4_k_m"))
+    d = mf.as_dict(mf.read(tmp_path))
+    assert d["build_id"] == "abc123def456"
+    assert d["resolved"] == RESOLVED
+    assert d["defaults_files"] == {}
+    # Unrendered, deliberately present: visible on /api/state the day it starts
+    # being written, rather than discovered a release later.
+    assert d["extra"] == {"quantiser": "q4_k_m"}

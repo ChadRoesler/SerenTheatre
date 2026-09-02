@@ -39,6 +39,18 @@ function fmtAge(epoch) {
     if (!epoch) return '-';
     return fmtDur(Date.now() / 1000 - epoch) + ' ago';
 }
+// The date a run was executed, in the reader's own locale. The sketch asks for
+// it in the header and the manifest has carried `started` all along.
+function fmtWhen(epoch) {
+    if (!epoch) return '-';
+    const d = new Date(epoch * 1000);
+    if (isNaN(d.getTime())) return '-';
+    return d.toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit',
+    });
+}
+
 
 function fmtBytes(n) {
     if (n == null) return '-';
@@ -73,7 +85,12 @@ function card(key, title, badge, sub, body, startCollapsed) {
 }
 
 document.addEventListener('click', (e) => {
-    const head = e.target.closest('.card.collapsible > h3');
+    // Both levels of collapsible share one delegated handler: the run
+    // cards and the step cards inside them. One mechanism, not two - a
+    // second listener with its own key rules is how the two would start
+    // disagreeing about what is open.
+    const head = e.target.closest(
+        '.card.collapsible > h3, .step.collapsible > .step-head');
     if (!head) return;
     const el = head.parentElement;
     const key = el.getAttribute('data-key');
@@ -88,25 +105,236 @@ document.addEventListener('click', (e) => {
 
 // -- the stage ladder -------------------------------------------------------
 
-function renderLadder(m) {
+// -- the steps -------------------------------------------------------------
+//
+// WAS A FLAT LADDER OF 17 ROWS, all expanded, one row per stage of a gauntlet.
+// That is a wall you read rather than a thing you glance at, and the brief is
+// tiered seats with the house lights down: you look, you learn where the run
+// is, you look away.
+//
+// So each step is now a small collapsible card - collapsed to a single row,
+// opening to whatever is actually recorded about it. Same mechanics as .card,
+// one level down and quieter, rather than a second design system.
+//
+// The glyph on the right is the sketch's (✔ / ⏳ / …) and it carries the
+// status colour, which used to live on a bullet at the left. One indicator for
+// one fact. A status this viewer does not recognise gets '?' and the hollow
+// treatment, never a glyph borrowed from a state we do know.
+const GLYPH = {
+    pending: '…', running: '⏳', done: '✔', skipped: '⊘',
+    failed: '✖', refused: '⊗', warned: '⚠',
+};
+
+// The newest log in the STAGE directory, offered as detail on the RUNNING step
+// only, and labelled with the file it came from. Attributing a stage-level
+// tail to one step is an inference; an inference that says so is detail, and
+// an unlabelled one is the viewer inventing a reading.
+function renderStepLog(log) {
+    if (!log) return '';
+    const st = log.step || {};
+    const bits = [
+        log.phase && log.phase !== 'unknown' ? `phase ${log.phase}` : null,
+        log.activity ? `busy with ${log.activity}` : null,
+        log.subject ? `subject ${log.subject}` : null,
+        st.step != null ? `step ${st.step}${st.total ? ' / ' + st.total : ''}` : null,
+        st.loss != null ? `loss ${st.loss}` : null,
+        st.rate || null,
+        st.eta ? `eta ${st.eta}` : null,
+    ].filter(Boolean).join(' · ');
+    if (!bits) return '';
+    return `<div class="det">${escapeHtml(bits)}
+        <div class="hint">read from <code>${escapeHtml(log.name)}</code> — the
+        newest log in this stage directory, not the manifest.</div></div>`;
+}
+
+function renderSteps(key, m, log) {
     const rows = m.stages.map((s) => {
         // known_status comes from the server. Trusting it rather than
         // re-deriving here keeps one implementation of "do we understand this
         // state" - two would eventually disagree, on screen.
-        const cls = s.known_status === false || !KNOWN.includes(s.status)
-            ? 'unknown' : s.status;
+        const known = !(s.known_status === false || !KNOWN.includes(s.status));
+        const cls = known ? s.status : 'unknown';
+        const glyph = known ? (GLYPH[s.status] || '?') : '?';
         const right = (s.status === 'running' || s.status === 'done')
             ? fmtDur(s.elapsed) : '';
-        const note = s.note ? `<div class="note">${escapeHtml(s.note)}</div>` : '';
-        const art = s.artifact ? ` <code>${escapeHtml(s.artifact)}</code>` : '';
-        return `<div class="step ${cls}">
-            <span class="dot"></span>
-            <span class="label">${escapeHtml(s.label)}${art}</span>
-            <span class="meta">${escapeHtml(right)}</span>
-            ${note}
+        const detail = [
+            s.note ? `<div class="note">${escapeHtml(s.note)}</div>` : '',
+            s.artifact
+                ? `<div class="det">artifact <code>${escapeHtml(s.artifact)}</code></div>`
+                : '',
+            s.started
+                ? `<div class="det">started ${escapeHtml(fmtWhen(s.started))}${
+                    s.ended ? ` · ended ${escapeHtml(fmtWhen(s.ended))}` : ''}${
+                    s.elapsed != null ? ` · ${escapeHtml(fmtDur(s.elapsed))}` : ''
+                  }</div>`
+                : '',
+            s.status === 'running' ? renderStepLog(log) : '',
+        ].filter(Boolean).join('');
+        // The running step opens and finished ones stay shut - the same habit
+        // the rung cards already had, one level down. An explicit click still
+        // beats the default, both ways, via the '!' key in COLLAPSED.
+        const k = `step:${key}:${s.id}`;
+        const open = s.status === 'running';
+        const collapsed = COLLAPSED.has(k) || (!open && !COLLAPSED.has('!' + k));
+        return `<div class="step collapsible ${cls} ${collapsed ? 'collapsed' : ''}"
+                     data-key="${escapeHtml(k)}">
+            <div class="step-head">
+                <span class="twisty">▾</span>
+                <span class="label">${escapeHtml(s.label)}</span>
+                <span class="meta">${escapeHtml(right)}</span>
+                <span class="glyph" title="${escapeHtml(s.status)}">${glyph}</span>
+            </div>
+            <div class="step-body">${detail
+                || '<div class="det hint">Nothing further recorded for this step.</div>'}
+            </div>
         </div>`;
     }).join('');
     return `<div class="ladder">${rows}</div>`;
+}
+
+// ② STALENESS, REPORTED RATHER THAN CONCLUDED.
+//
+// The old block here said, in red, that a manifest quiet for 46m meant the
+// process had most likely been killed. The manifest is written on STAGE
+// TRANSITIONS
+// and a fine-tune stage runs about 58 minutes, so that fired on every healthy
+// fine-tune - eight consecutive hour-long false alarms on an 8-expert gauntlet,
+// while it trained perfectly.
+//
+// The deeper fault was the wording. A dead process is a conclusion no single
+// mtime can support. So: print the readings - manifest quiet 46m · log
+// wrote 3s ago - and let the reader draw it. The server decided the state
+// (sources.activity_state); this only says what the numbers were.
+function renderQuiet(r) {
+    const q = r.quiet;
+    if (!q || q.manifest_quiet_for == null) return '';
+    if (q.manifest_quiet_for <= q.after_seconds) return '';
+    const reads = [`manifest quiet ${fmtDur(q.manifest_quiet_for)}`].concat(
+        (q.files || []).map((f) => (f.exists && f.quiet_for != null)
+            ? `${f.role} wrote ${fmtDur(f.quiet_for)} ago`
+            : `${f.role} file never appeared`));
+    const line = `<div class="reads">${escapeHtml(reads.join(' · '))}</div>`;
+    if (q.recent_write) {
+        return `<div class="quiet">The manifest has not been rewritten in
+            ${escapeHtml(fmtDur(q.manifest_quiet_for))} — it is written on stage
+            transitions, and a fine-tune stage runs for about an hour. Something
+            in this directory is still being written.${line}</div>`;
+    }
+    return `<div class="err">Nothing here has been written for
+        ${escapeHtml(fmtDur(q.newest_activity_for))} — not the manifest, not the
+        log. That is a reading and not a verdict: a stat() cannot tell you
+        whether the process is alive.${line}</div>`;
+}
+
+// ④ THE PLAYBILL - the recipe that was executed, defaults filled in.
+//
+// SOURCED FROM THE MANIFEST AND NOT FROM A RECIPE FILE ON DISK, deliberately.
+// A recipe is mutable and can be edited after the run; `resolved` is the
+// record of what was actually built.
+//
+// It is also NOT the whole recipe, and the panel says so in words rather than
+// letting the reader assume. `resolved` is the FINGERPRINT: the values that
+// decide what the build produces. The writer excludes identity and paths, the
+// force/redo flags, throughput tuning that changes how fast the teacher runs
+// but not what it emits, and the smoke-test settings that inspect an artifact
+// rather than build one. Seventeen fields, curated on purpose. Presenting the
+// other seventy-five as "the recipe" would be a lie of omission.
+//
+// GROUPED BY WHAT A FIELD DECIDES, not alphabetically: seventy-five sorted
+// keys is a dump, not a review. The config's own names already cluster
+// (abliterate_, reasoning_, router_, lora_, warmup_, vllm_, shared_expert_),
+// so prefixes do most of the work and a short list of exacts catches the
+// singletons. First match wins, so the order below is the grouping.
+//
+// ANYTHING UNMATCHED LANDS IN "other" AND IS RENDERED. The day the writer adds
+// a field it appears there rather than vanishing - the same bargain `extra`
+// makes one layer down, for the same reason.
+const PLAYBILL_GROUPS = [
+    ['model', ['base_'], ['size', 'base', 'tier', 'seed', 'dryrun']],
+    ['experts', [], ['expert_names', 'synth_experts', 'reasoning_experts',
+                     'tools_expert_name', 'reasoning_expert_name']],
+    ['abliterate', ['abliterate_'], []],
+    ['reasoning', ['reasoning_'], ['reasoning']],
+    ['corpus', ['code_prompt_'], ['num_code_samples', 'collect_token_target',
+        'chars_per_token_est', 'min_samples_per_expert', 'max_shards',
+        'num_agent_samples', 'per_repo_cap', 'expert_token_budget']],
+    ['teacher', ['teacher_', 'vllm_'], ['use_vllm']],
+    ['training', ['lora_', 'warmup_'], ['max_seq_length', 'load_in_4bit',
+        'optim', 'gradient_checkpointing', 'packing_strategy', 'target_modules',
+        'attn_impl', 'per_device_batch', 'grad_accum', 'lr_lora',
+        'specialist_save_steps', 'use_unsloth', 'target_steps']],
+    ['router', ['router_'], ['lr_router', 'agent_mix_fraction']],
+    ['moe', ['shared_expert_'], ['experts_per_tok', 'norm_topk_prob',
+                                 'mlp_only_layers']],
+    ['eval', ['eval_'], []],
+];
+
+function pbValue(v) {
+    if (v === null || v === undefined) return '<span class="hint">null</span>';
+    if (Array.isArray(v)) {
+        return v.length ? escapeHtml(v.join(', '))
+                        : '<span class="hint">(empty)</span>';
+    }
+    if (typeof v === 'object') return `<code>${escapeHtml(JSON.stringify(v))}</code>`;
+    if (typeof v === 'boolean') return v ? 'true' : 'false';
+    if (v === '') return '<span class="hint">(blank)</span>';
+    return escapeHtml(String(v));
+}
+
+function pbBlock(label, keys, res) {
+    return `<div class="pb-group"><h5>${escapeHtml(label)}</h5><dl class="kv">`
+        + keys.map((k) => `<dt>${escapeHtml(k)}</dt><dd>${pbValue(res[k])}</dd>`)
+              .join('')
+        + `</dl></div>`;
+}
+
+function renderPlaybill(m) {
+    const res = m.resolved || {};
+    const keys = Object.keys(res);
+    const files = m.defaults_files || {};
+    const fkeys = Object.keys(files);
+    if (!keys.length && !fkeys.length && !m.build_id) {
+        // A true reading, not an error: an older writer, or a directory
+        // somebody redirected a log into with no pipeline cooperating at all.
+        return `<aside class="playbill"><h4>Playbill</h4>
+            <div class="empty">This run's manifest carries no resolved config,
+            so there is nothing to show here. That is a reading, not a
+            failure — the run is watchable either way.</div></aside>`;
+    }
+    const taken = new Set();
+    const blocks = PLAYBILL_GROUPS.map(([label, prefixes, exacts]) => {
+        const mine = keys.filter((k) => !taken.has(k)
+            && (exacts.includes(k) || prefixes.some((p) => k.startsWith(p))));
+        mine.forEach((k) => taken.add(k));
+        return mine.length ? pbBlock(label, mine, res) : '';
+    }).join('');
+    const rest = keys.filter((k) => !taken.has(k));
+    const other = rest.length ? pbBlock('other', rest, res) : '';
+    // The short hash beside each defaults file is the point of showing them at
+    // all: it says WHICH version of that file this run inherited, which the
+    // path alone cannot, because the file has probably been edited since.
+    const defaults = fkeys.length
+        // THE PATH, not the basename. Two defaults files in different
+        // directories are both called defaults.yaml, and showing only the name
+        // rendered them as the same file with two different hashes - which
+        // reads as a contradiction rather than as two files.
+        ? `<div class="pb-group"><h5>defaults inherited</h5><dl class="kv">`
+          + fkeys.map((f) => `<dt>${escapeHtml(f)}</dt>`
+              + `<dd><code>${escapeHtml(String(files[f]))}</code></dd>`).join('')
+          + `</dl></div>`
+        : '';
+    return `<aside class="playbill">
+        <h4>Playbill${m.build_id
+            ? ` <code title="digest of the resolved config">${
+                escapeHtml(m.build_id)}</code>` : ''}</h4>
+        <div class="pb-note">The <b>fingerprinted</b> config: the ${keys.length}
+        resolved values that decide what this build produces, defaults already
+        filled in. Not the recipe verbatim — paths, redo flags, throughput
+        tuning and smoke-test settings are excluded by the writer because none
+        of them change the artifact. Read off the manifest rather than a recipe
+        file, because a recipe can be edited after the run and this cannot.</div>
+        <div class="pb-body">${defaults}${blocks}${other}</div>
+    </aside>`;
 }
 
 function renderRefusals(m) {
@@ -258,28 +486,37 @@ function renderLaunch(s) {
         </div></div>`;
 }
 
-function renderRung(r) {
+function renderRung(r, log) {
     const m = r.manifest;
     if (m) {
-        const badge = `<span class="badge ${m.state}">${m.state}</span>`;
+        // The state the SERVER decided, which may have had the log's vote -
+        // see sources.activity_state. Falling back to the manifest-only word
+        // when a payload has no rung-level `state`, so an older server or a
+        // non-current run still renders.
+        const state = r.state || m.state;
+        const badge = `<span class="badge ${state}">${escapeHtml(state)}</span>`;
+        // Recipe name · date executed · status, per the sketch. The directory
+        // name stays on the line because two runs of one recipe are told apart
+        // by nothing else.
         const sub = [
-            m.name && escapeHtml(m.name),
+            m.started ? `executed ${escapeHtml(fmtWhen(m.started))}` : null,
             m.size && escapeHtml(m.size),
-            m.recipe_id && `<code>${escapeHtml(m.recipe_id)}</code>`,
-            `${m.done_count}/${m.stage_count} stages`,
-            `updated ${fmtAge(m.updated)}`,
+            `${m.done_count}/${m.stage_count} steps`,
+            `<code>${escapeHtml(r.name)}</code>`,
+            // Say which readings decided the badge, whenever it was not the
+            // manifest alone. Same honesty as `source` one field over.
+            (r.state_source && r.state_source !== 'manifest')
+                ? `<span class="hint" title="the manifest's own word was '${
+                    escapeHtml(m.state)}'">${escapeHtml(r.state_source)}</span>`
+                : null,
         ].filter(Boolean).join(' · ');
-        const stalled = m.stale
-            ? `<div class="err">This run's manifest says a stage is still
-               running, but it has not been updated in
-               ${escapeHtml(fmtDur(Date.now() / 1000 - m.updated))}. The process
-               was probably killed - a stage that dies never gets to write a
-               final status.</div>` : '';
-        // Finished runs start collapsed: on a ladder you accumulate one card
-        // per rung, and the one you want open is the one still moving.
-        const done = m.state === 'finished';
-        return card(r.name, escapeHtml(r.name), badge, sub,
-                    stalled + renderLadder(m) + renderRefusals(m), done);
+        // Finished runs start collapsed: the one you want open is the one
+        // still moving.
+        const done = state === 'finished';
+        const body = `<div class="run"><div class="run-main">${renderQuiet(r)}${
+            renderSteps(r.path, m, log)}${renderRefusals(m)}</div>${
+            renderPlaybill(m)}</div>`;
+        return card(r.path, escapeHtml(m.name || r.name), badge, sub, body, done);
     }
 
     // Fallback reading: no manifest, so this is what is ON DISK. Say so.
@@ -336,7 +573,21 @@ function renderStages(state) {
                 <div class="card-body"><div class="empty">No runs here yet.</div>
                 </div></div>`;
         }
-        return launch + s.rungs.map(renderRung).join('');
+        // ONE RUN ON STAGE: the current one, or the most recent. The
+        // server ordered them and counted the rest (sources.order_rungs),
+        // so the page and /api/state agree about which is current.
+        //
+        // The earlier runs are still in the payload and the count is SHOWN.
+        // A viewer that silently drops data is the thing this codebase
+        // keeps fixing - and the count is the seam a Previous Shows
+        // section lands on later.
+        const earlier = s.earlier || 0;
+        const seam = earlier
+            ? `<div class="earlier">${earlier} earlier run${
+                earlier === 1 ? '' : 's'} in <code>${escapeHtml(s.path)}</code>
+               — not shown here, and still on <code>/api/state</code>.</div>`
+            : '';
+        return launch + renderRung(s.rungs[0], (s.logs || [])[0]) + seam;
     }).join('');
 }
 

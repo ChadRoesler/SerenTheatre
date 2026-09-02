@@ -69,7 +69,7 @@ shows up in the grid with no edit to Starwright.
 |--------------|-------------------------------------------------------|
 | `/viewer`    | The room itself. Read-only, auto-refreshing.          |
 | `/api/state` | The same thing as JSON, if you'd rather script it.    |
-| `/health`    | Liveness.                                              |
+| `/health`    | Liveness.                                             |
 | `/`          | Service info + the version, family-standard.          |
 
 ---
