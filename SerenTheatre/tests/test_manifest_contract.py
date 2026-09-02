@@ -158,6 +158,44 @@ def test_the_reader_has_somewhere_to_put_a_field_nobody_has_written_yet():
         f"own field - carried, but unrendered and unnamed.")
 
 
+# ── the glossary, named rather than left to the sweep above ─────────────────
+#
+# The field-name sweep already covers `knobs` structurally the day the writer
+# lands it, and that is the right guard and the wrong documentation: nothing
+# above says what a knobs ENTRY looks like, and the entry is the half the
+# viewer reads. So this names it, and it SKIPS with a sentence while the
+# writing half is still being built rather than passing vacuously - Theatre is
+# reading ahead of this contract, which is the unusual direction for this pair
+# and the reason the skip is the honest outcome rather than a red test.
+
+@needs_writer
+def test_the_knob_glossary_is_kept_and_served_when_the_writer_stamps_one():
+    theirs = _writer_manifest_fields()
+    assert theirs, "the Manifest dataclass could not be read; see above"
+    if "knobs" not in theirs:
+        pytest.skip(
+            f"{wf.WRITER_DIST} does not stamp `knobs` yet. seren-theatre reads "
+            f"it ahead of the writer here, against the agreed contract rather "
+            f"than against a live emitter - delete this skip the day the "
+            f"writing half lands, because from then on it is a real check.")
+    ours = {f.name for f in dataclasses.fields(mf.Manifest)}
+    assert "knobs" in ours, (
+        "the writer stamps a glossary and this reader parses straight past it")
+    assert "knobs" in mf.as_dict(mf.Manifest()), (
+        "`knobs` is read and then dropped by as_dict, so /api/state never "
+        "carries it and the viewer has nothing to render")
+    assert "knobs" in set(mf.KNOWN_KEYS), (
+        "`knobs` would land in `extra` rather than in its own field - carried, "
+        "but unrendered and unnamed")
+    src = source.read_text(encoding="utf-8")
+    for key in (mf.KNOB_SUMMARY, mf.KNOB_DERIVED_FROM):
+        assert f'"{key}"' in src or f"'{key}'" in src, (
+            f"seren-theatre reads {key!r} inside a knobs entry and "
+            f"{wf.WRITER_DIST} never writes that name. The entry shape has "
+            f"drifted: every affordance would come out empty, and an empty "
+            f"playbill row looks exactly like a writer with no coverage.")
+
+
 # ── the guards on the guard ─────────────────────────────────────────────────
 
 def test_the_writer_is_still_derivable_from_what_theatre_declares():
