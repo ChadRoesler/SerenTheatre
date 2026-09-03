@@ -361,6 +361,55 @@ body { font-size: 14px; }
 .res-t .none, .res-when .none { color: var(--faint); }
 
 
+/* -- the backstage reference panel ---------------------------------------- */
+/* WAS class="empty", WHICH IS WHY IT LOOKED LIKE THAT. `.empty` is the
+   nothing-here state: dashed border, centred text. Centred, this panel put
+   every source kind, validator and tag pair on its own centre line with the
+   bullet adrift to the far left, inside a box whose border announces the panel
+   is empty while it is in fact full. Two rules doing exactly what they say,
+   applied to the wrong element.
+
+   What it actually is: a reference somebody reads WHILE writing a recipe. So
+   one row shape throughout - a fixed-width name column and a description that
+   wraps under itself - and the eye scans the names down a straight edge. */
+.bs-ref { margin-top: 14px; font-size: 12.5px; line-height: 1.5; }
+.ref-block + .ref-block {
+    margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+}
+.ref-block h5 {
+    margin: 0 0 8px; font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--faint);
+}
+/* The name column is fixed so the descriptions start on one line. `minmax`
+   with a 0 floor rather than `auto`, or a long name would push the text column
+   off the panel instead of wrapping. */
+.ref-row {
+    display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr);
+    gap: 4px 12px; padding: 3px 0; align-items: start;
+}
+.ref-row + .ref-row { border-top: 1px solid rgba(255, 255, 255, .04); }
+.ref-row > code {
+    color: var(--text); text-align: right; overflow-wrap: anywhere;
+}
+.ref-text { color: var(--muted); min-width: 0; }
+/* Delimiters get their own line. A wrong tag style is a wrong ANSWER - the
+   splitter finds nothing, eval reports "did not reason", and the think block
+   is scored as though it were the answer - so they must not be skimmed past
+   in the middle of a sentence. */
+.ref-tags { margin-top: 3px; }
+.ref-tags code { color: var(--run); }
+.ref-path { overflow-wrap: anywhere; margin-bottom: 2px; }
+.ref-err {
+    color: var(--warn); padding: 3px 0;
+    border-top: 1px solid rgba(255, 255, 255, .04);
+}
+.ref-err:first-of-type { border-top: 0; }
+@media (max-width: 640px) {
+    /* A phone has no room for two columns; the name becomes a label above. */
+    .ref-row { grid-template-columns: minmax(0, 1fr); gap: 1px; }
+    .ref-row > code { text-align: left; }
+}
+
 /* -- comparing two runs ---------------------------------------------------- */
 /* The verdict is the loudest thing in the panel and that is deliberate: two
    columns of numbers produce a conclusion in the reader's head whether or not
@@ -626,6 +675,85 @@ code { color: var(--muted); font-size: 12px; }
 }
 #bs-out .ok { border-color: var(--good, #7fd88f); }
 #bs-out .bad { border-color: var(--bad, #ff6e8a); }
+
+/* -- a build refusal ------------------------------------------------------
+ *
+ * Deliberately NOT styled as an error. A refusal is the pipeline working: it
+ * looked at the run directory, found finished stages built under different
+ * settings, and declined to mix them. Painting that the same red as a
+ * traceback teaches the operator to read "the tool broke" when the tool is
+ * the only thing in the room behaving correctly. Warn, not danger - the one
+ * thing here that gets --danger is the button that destroys work.
+ */
+.drift {
+    padding: 14px; border-radius: 8px;
+    background: var(--bg); border: 1px solid var(--warn);
+}
+.dr-head { font-weight: 600; color: var(--warn); }
+.dr-where {
+    margin-top: 3px; color: var(--faint);
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.dr-kept { margin-top: 9px; font-size: 12.5px; color: var(--muted); }
+.dr-kept b { color: var(--text); font-weight: 600; }
+.dr-title {
+    margin: 14px 0 6px; font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--faint);
+}
+.dr-table {
+    width: 100%; border-collapse: collapse;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.dr-table thead th {
+    text-align: left; font-weight: 500; color: var(--faint);
+    font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+    border-bottom: 1px solid var(--line); padding: 0 10px 4px 0;
+}
+.dr-table tbody th {
+    text-align: left; font-weight: 500; color: var(--text);
+    padding: 4px 10px 4px 0; vertical-align: top; word-break: break-word;
+}
+.dr-table td {
+    padding: 4px 10px 4px 0; vertical-align: top; word-break: break-word;
+}
+/* WAS dimmed, NOW plain. The eye should land on what the build would use. */
+.dr-was { color: var(--faint); text-decoration: line-through; }
+.dr-now { color: var(--text); }
+.dr-note { color: var(--muted); font-style: italic; padding: 4px 0; }
+/* No record is not a value that was removed. Struck-through text would claim
+   the second, which is a different sentence about the previous run. */
+.dr-absent { color: var(--faint); font-style: italic; }
+.dr-rest { margin-top: 10px; }
+.dr-rest summary { cursor: pointer; color: var(--faint); font-size: 12px; }
+.dr-rest table { margin-top: 8px; }
+.dr-raw {
+    margin: 0; padding: 10px; white-space: pre-wrap; word-break: break-word;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.dr-opts { margin: 0; padding: 0; list-style: none; }
+.dr-opts li {
+    display: flex; gap: 10px; align-items: baseline;
+    padding: 6px 0; border-top: 1px solid var(--line);
+}
+.dr-opts li:first-child { border-top: 0; }
+.dr-opts code {
+    flex: 0 0 auto; min-width: 210px; color: var(--text);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.dr-opts button { flex: 0 0 auto; }
+.dr-what { color: var(--muted); font-size: 12.5px; }
+/* The only destructive control in the room, and it says so. */
+#bs-out button.danger {
+    color: var(--danger); border-color: var(--danger); font-weight: 600;
+}
+#bs-out button.danger:hover { background: rgba(240, 121, 106, .12); }
+.dr-log { margin-top: 12px; }
+.dr-log summary { cursor: pointer; color: var(--faint); font-size: 12px; }
+.dr-log pre {
+    margin-top: 8px;
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 .toolbar select, .toolbar input[type=text], .toolbar input:not([type]) {
     color: var(--text); background: var(--bg);
     border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;

@@ -76,5 +76,10 @@
     <textarea id="bs-text" spellcheck="false"
               placeholder="# paste or write a recipe"></textarea>
     <div id="bs-out"></div>
-    <div id="bs-help" class="empty"></div>
+    <!-- NOT class="empty". That class is the "nothing here" state - dashed
+         border, centred text - and this panel is a REFERENCE you read while
+         writing a recipe. Centred, it put every source kind, validator and tag
+         pair on its own centre line with the bullets adrift, inside a box
+         whose border says the panel is empty while it is full. -->
+    <div id="bs-help" class="bs-ref"></div>
 </section>

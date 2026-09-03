@@ -413,7 +413,7 @@ DETACHED_MARKER = ".stagehand-run.json"
 MARKER_SCHEMA_VERSION = 1
 MARKER_KEYS = ("schema_version", "pid", "argv", "command_line", "cwd",
                "recipe", "started", "log_file", "events_file", "launch",
-               "exit_code", "error", "log_tail")
+               "exit_code", "error", "log_tail", "error_event")
 
 # THE THREE ANSWERS, and the middle one was learned the expensive way.
 #
@@ -427,14 +427,55 @@ LAUNCH_FINISHED = "finished"
 LAUNCH_FAILED = "failed"
 
 # How long to wait before believing a launch. A build that dies on argv
-# parsing dies in milliseconds; a nine-hour run does not finish inside half a
-# second. So the timeout FIRING is the success case, and this can never become
+# parsing dies in milliseconds; a nine-hour run does not finish inside three
+# seconds. So the timeout FIRING is the success case, and this can never become
 # a wait on a real run - it is bounded by construction, not by hope.
-LAUNCH_SETTLE_SECONDS = 0.4
+#
+# WHY THIS IS NO LONGER 0.4, and the reason is the refusal that only sometimes
+# arrived. A resume refusal is not an argv error: the builder loads the recipe,
+# resolves ninety-odd config fields, translates the levers, reads the previous
+# manifest and diffs two fingerprints BEFORE it can decline. That is real work,
+# and it lands either side of 0.4s depending on the box - the same seeded
+# directory refused at 0.41s on one run and 0.44s on the next. So which of two
+# completely different things the operator saw - a refusal panel naming every
+# changed field, or a cheerful "started pid 11" for a build that was already
+# dead - came down to a coin flip on process startup.
+#
+# 0.4 was a fast-machine number. Build for the floor: an Orin Nano takes
+# several times longer than a Spark to get through the same imports and yaml,
+# so the window has to cover the SLOW box or the fast box is the only one that
+# ever sees the good error. Three seconds does, with room.
+#
+# The cost is bounded and lands in the right place: a person who clicked Run
+# waits up to three seconds for the answer, and only when the build is going to
+# outlive the wait - which is every successful one, and none of the ones where
+# the wait bought anything.
+LAUNCH_SETTLE_SECONDS = 3.0
 
 # Enough of the log to see an argparse usage message or a traceback's last
 # frames, and not so much that a marker becomes a log file.
 MARKER_LOG_TAIL_BYTES = 2048
+
+# The budget for the OTHER stream, and it is a WHOLE-FILE budget rather than a
+# tail. That distinction cost a debugging round and is worth the paragraph.
+#
+# The first version of this tailed the last 8 KB, by analogy with the log. It
+# found nothing, every time, against a real refusal - because the refusal event
+# is the LARGEST LINE IN THE FILE. A resume refusal on a 92-field config
+# carries every changed field twice, as prose and as a table, and comes to
+# about 13 KB on its own. An 8 KB window lands in the middle of it, the
+# fragment does not parse, and the reader correctly skips it and correctly
+# reports nothing - a null result that was entirely an artefact of how it
+# looked. The analogy with the log was the mistake: a log tail is the end of a
+# stream of small lines, and this is one enormous line near the beginning.
+#
+# So this is a size CEILING, not a window: under it, read the whole file, which
+# is always the right answer here because this function is only ever called on
+# a build that died within LAUNCH_SETTLE_SECONDS and such a file is small by
+# construction. Over it, fall back to a tail rather than slurping - a
+# long-running build that dies late can have a genuinely large event log, and
+# a viewer must not read 400 MB into memory to answer one question.
+MARKER_EVENT_MAX_BYTES = 4 * 1024 * 1024
 
 
 class BuildDiedAtLaunch(RuntimeError):
@@ -448,10 +489,16 @@ class BuildDiedAtLaunch(RuntimeError):
     """
 
     def __init__(self, exit_code: int, argv: Sequence[str],
-                 log_tail: Optional[str] = None) -> None:
+                 log_tail: Optional[str] = None,
+                 event: Optional[Dict[str, Any]] = None) -> None:
         self.exit_code = exit_code
         self.argv = list(argv)
         self.log_tail = log_tail
+        # The builder's own last `error` event, when it emitted one. A dict
+        # or None - never a parsed version of the prose. A caller that gets
+        # None has genuinely been told nothing structured and should say so,
+        # rather than cutting up log_tail and calling the pieces facts.
+        self.event = event or None
         tail = f"\n{log_tail}" if log_tail else ""
         super().__init__(
             f"the build exited with code {exit_code} within "
@@ -473,10 +520,19 @@ def _log_tail(path: Optional[Path],
     try:
         with open(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, fh.tell() - limit))
-            return fh.read().decode("utf-8", "replace").strip() or None
+            size = fh.tell()
+            fh.seek(max(0, size - limit))
+            blob = fh.read().decode("utf-8", "replace")
     except OSError:
         return None
+    # A window that started mid-file starts mid-LINE, and usually mid-CHARACTER
+    # - the builder prints a "\u00b7" bullet per changed field, so the tail
+    # opened with a replacement glyph and half a sentence. Drop the partial
+    # first line when there is one; a fragment shown as content is a small lie
+    # about what the program said.
+    if size > limit and "\n" in blob:
+        blob = blob.split("\n", 1)[1]
+    return blob.strip() or None
 
 
 def _write_marker(cwd: Path, payload: Dict[str, Any]) -> Optional[Path]:
@@ -502,6 +558,47 @@ def _write_marker(cwd: Path, payload: Dict[str, Any]) -> Optional[Path]:
         except OSError:
             pass
         return None
+
+
+def _last_error_event(path: Optional[Path],
+                      limit: int = MARKER_EVENT_MAX_BYTES
+                      ) -> Optional[Dict[str, Any]]:
+    """The builder's last `error` event. Never raises, never guesses.
+
+    The events file is JSON Lines. Read WHOLE when it is smaller than `limit`,
+    which for this caller it always is - see the note on MARKER_EVENT_MAX_BYTES
+    for the round this cost. Only an oversized file is tailed, and there the
+    first line of the window is a fragment, so lines that do not parse are
+    skipped rather than repaired: a half-read event is not an event.
+
+    Walks backwards for the LAST error, because a build that emitted two has
+    a later one that is more likely to be why it stopped.
+
+    Returns None for "the builder said nothing structured", which includes
+    every older ms-moe-maker. That is a real answer and the caller renders it
+    as one - it must never become an empty dict a UI reads as "no changes".
+    """
+    if path is None:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - limit))
+            blob = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    for line in reversed(blob.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("event") == "error":
+            return row
+    return None
 
 
 def run_detached(recipe: Path, *, cwd: Path, log_file: Optional[Path] = None,
@@ -610,7 +707,7 @@ def run_detached(recipe: Path, *, cwd: Path, log_file: Optional[Path] = None,
         "log_file": str(log_file) if log_file else None,
         "events_file": str(events_file) if events_file else None,
         "launch": LAUNCH_STARTED, "exit_code": None, "error": None,
-        "log_tail": None,
+        "log_tail": None, "error_event": None,
     }
 
     # "STARTED" HAS TO MEAN STARTED. wait() with a timeout rather than
@@ -632,14 +729,19 @@ def run_detached(recipe: Path, *, cwd: Path, log_file: Optional[Path] = None,
         marker.update(launch=LAUNCH_FINISHED, exit_code=0)
     elif code is not None:
         tail = _log_tail(log_file)
+        # BOTH STREAMS, because they say different things. The log is what a
+        # person reads; the event is what a UI can act on. Keeping only the
+        # first is how the operator ends up copying a flag out of a <pre>.
+        event = _last_error_event(events_file)
         marker.update(launch=LAUNCH_FAILED, exit_code=code, log_tail=tail,
+                      error_event=event,
                       error=f"exited with code {code} within "
                             f"{LAUNCH_SETTLE_SECONDS}s of launch")
         # The marker is written for the FAILURE too - a reader needs to see
         # that a launch was attempted and died, which is a different fact from
         # no launch at all, and it is the fact the old code hid.
         _write_marker(cwd, marker)
-        raise BuildDiedAtLaunch(code, argv, tail)
+        raise BuildDiedAtLaunch(code, argv, tail, event)
 
     _write_marker(cwd, marker)
     return dict(marker)

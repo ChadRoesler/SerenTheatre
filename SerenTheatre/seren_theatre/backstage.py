@@ -89,6 +89,23 @@ class RunBody(BaseModel):
     # arbitrary cwd is a remote-execution primitive with extra steps.
     stage: Optional[str] = None
 
+    # `--force`, AND IT IS NOT A CHECKBOX ON THE FORM. It is here because
+    # the builder's resume refusal names it as one of three ways out, and a
+    # refusal that names its own fix while the room can perform none of them
+    # is a dead end with good manners.
+    #
+    # But it DISCARDS FINISHED WORK - the refusal exists precisely because
+    # stages that already completed would otherwise be inherited, and on a
+    # real run that is twenty minutes of abliteration. So the viewer only
+    # offers it on the refusal panel, after the diff has been shown; see the
+    # note in scripts.js. Hands on the surface: you cannot reach the button
+    # without having been handed the thing it destroys.
+    #
+    # Unlike the `allow_refusals` box this replaced, it is a REAL FLAG -
+    # `ms-moe-maker build --force`, asserted against argparse by the
+    # builder's own test_refusal_is_data.py.
+    force: bool = False
+
 
 def _safe_recipe_path(cfg, name: str) -> Path:
     if not _SAFE_NAME.match(name or ""):
@@ -342,6 +359,8 @@ def router() -> APIRouter:
         extra: List[str] = []
         if body.dryrun:
             extra.append("--dryrun")
+        if body.force:
+            extra.append("--force")
 
         try:
             # The log lands IN the stage, which is how Theatre can see it: the
@@ -357,11 +376,48 @@ def router() -> APIRouter:
         except stagehand.StagehandUnavailable as exc:
             raise HTTPException(503, str(exc)) from exc
         except stagehand.BuildDiedAtLaunch as exc:
-            # 500, not 200-with-a-sad-field. The whole failure this replaces was
-            # a dead build reported as a live one, so the status code has to
-            # disagree too - a caller that only reads the code must not come
-            # away thinking a run is in progress.
-            raise HTTPException(500, str(exc)) from exc
+            # NOT 200-with-a-sad-field, whatever the code. The failure this
+            # replaces was a dead build reported as a live one, so the status
+            # has to disagree too - a caller that reads only the code must not
+            # come away thinking a run is in progress.
+            #
+            # BUT A REFUSAL IS NOT A SERVER ERROR, and this package already
+            # says so out loud: the release workflow accepts exit 1 from a
+            # build because "a refusal is a legitimate answer and NOT a CI
+            # failure - it means the recipe asks for something the pipeline
+            # cannot honour yet, which is the tool working."
+            #
+            # Reporting that as 500 makes the operator's log say ERROR and the
+            # browser say Internal Server Error, both of which point at
+            # Theatre. The thing that needs fixing is in the recipe, and it is
+            # already in the message. 409 says "this conflicts with what this
+            # box can currently do", which is exactly what happened.
+            #
+            # Anything OTHER than 1 stays a 500: argparse exits 2 on a flag
+            # nobody supports, a signal is negative, and those are breakage
+            # rather than judgement.
+            status = 409 if exc.exit_code == 1 else 500
+
+            # A DICT, NOT A SENTENCE. FastAPI puts `detail` in the body
+            # whatever shape it is, and the builder now emits its refusal
+            # as data: the finished stages it would inherit, the field diff,
+            # and the ways out. Flattening that back to str(exc) here would
+            # be the same loss twice - ms-moe-maker had the lists and printed
+            # sentences; there is no reason for Theatre to repeat the trick.
+            #
+            # `text` is always present and always the prose, so a caller
+            # that reads nothing else still gets the whole message. `event`
+            # is absent when the builder said nothing structured - an older
+            # install, or a death before it could emit - and the viewer says
+            # so rather than rendering an empty table.
+            detail: Dict[str, Any] = {
+                "text": str(exc),
+                "exit_code": exc.exit_code,
+                "command_line": " ".join(exc.argv),
+                "log_tail": exc.log_tail,
+                "event": exc.event,
+            }
+            raise HTTPException(status, detail) from exc
         except OSError as exc:
             raise HTTPException(500, f"could not start the build: {exc}") from exc
 

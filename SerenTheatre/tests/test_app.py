@@ -384,3 +384,26 @@ def test_every_tab_in_the_pack_reaches_the_rendered_page(client):
         f"the rendered page carries tabs {sorted(tabs)}")
     for fn in ("loadArchive", "loadRepertoire", "compareHtml", "loadBackstage"):
         assert fn in body, f"{fn} never reached the page"
+
+
+def test_no_content_panel_wears_the_empty_state_class():
+    """`.empty` is the NOTHING-HERE state: dashed border, centred text.
+
+    Backstage's registry reference wore it, so every source kind, validator and
+    reasoning tag rendered on its own centre line with the bullet adrift, inside
+    a box whose border announces the panel is empty while it is full. Both rules
+    were doing exactly what they say; they were on the wrong element.
+
+    A panel that is ALWAYS populated must never carry it. `.empty` belongs on a
+    div whose whole content is a sentence explaining an absence.
+    """
+    import re
+
+    body = (PACK / "body.html").read_text(encoding="utf-8")
+    # Comments discuss the class by name; strip them before looking.
+    body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    wearing = re.findall(r'<div id="([a-z-]+)"[^>]*class="[^"]*\bempty\b', body)
+    assert not wearing, (
+        f"{wearing} carry the empty-state class in the static markup. If a "
+        f"panel always has content, it needs its own class; `.empty` centres "
+        f"text and draws a dashed 'nothing here' border around it.")
