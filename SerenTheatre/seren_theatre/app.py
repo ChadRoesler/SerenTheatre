@@ -531,7 +531,24 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
                 "unaffected: <a href='/api/state'>/api/state</a>.</p>"
                 "<p><code>pip install seren-meninges</code></p>",
                 status_code=503)
-        return HTMLResponse(render_from_dir(
+        # NO-STORE, AND IT IS A CORRECTNESS FIX RATHER THAN A TUNING KNOB.
+        #
+        # The whole viewer pack - markup, styles and every renderer - is
+        # INLINED into this one document. It carried no Cache-Control, no ETag
+        # and no Last-Modified, so a browser applies HEURISTIC caching and is
+        # free to serve a copy from before the last upgrade. `pip install -U`
+        # plus a restart then changes nothing on screen, and the page shows
+        # tabs that no longer exist while missing ones that do.
+        #
+        # That is the one failure this service must never have. Theatre exists
+        # to report what is true right now; a cached viewer reports what was
+        # true last week and looks identical doing it - and the person is left
+        # asking why an upgrade they watched succeed did nothing.
+        #
+        # The document is ~150 KB on localhost or a LAN, refetched every time
+        # someone opens the room. That is not a cost worth a stale dashboard.
+        return HTMLResponse(headers={"Cache-Control": "no-store, must-revalidate"},
+                            content=render_from_dir(
             _VIEWER_DIR,
             title="seren-theatre",
             brand="Seren<b>Theatre</b>",
