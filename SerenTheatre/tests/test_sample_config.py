@@ -19,6 +19,7 @@ Three things get pinned, and the third is the one with teeth:
 """
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -50,12 +51,51 @@ def test_the_sample_is_valid_yaml(loaded):
         "sensible default, because only the operator knows where they build")
 
 
+def _keys_the_loader_reads(source: str):
+    """Every config key config.py pulls out of a mapping, nested ones included.
+
+    THIS USED TO BE `re.findall(r'data.get("([a-z_]+)"')` AND SAW NINE KEYS.
+    Nine, out of twenty-two. `data` is the local name inside `load_config`
+    alone; every nested section - ArchiveConfig, PipelineConfig, UpdatesConfig,
+    StageConfig - reads its own keys off a local called `d`, and the guard
+    could not see one of them. So `blobs`, `dsn`, `command`, `venv`, `rungs`,
+    `logs`, `index_url` and the rest could go undocumented and this test, whose
+    entire name is that they cannot, stayed green.
+
+    A test that reports less than it knows, which is the failure this codebase
+    keeps finding in its own instruments. The variable name was never the
+    thing that mattered; the `.get("literal")` is. So it is parsed rather than
+    grepped, and a new sub-config gets covered by existing here rather than by
+    somebody remembering to widen a regex.
+    """
+    keys = set()
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get" and node.args):
+            continue
+        first = node.args[0]
+        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+            continue
+        # Environment overrides are the NEXT test's job, and they are read off
+        # a mapping too. Excluded by shape rather than by receiver name, so a
+        # rename of the local cannot switch the exclusion on and off.
+        if first.value.upper() == first.value:
+            continue
+        keys.add(first.value)
+    return sorted(keys)
+
+
 def test_every_setting_the_loader_reads_is_documented(text):
     source = Path(cfgmod.__file__).read_text(encoding="utf-8")
-    keys = sorted(set(re.findall(r'data\.get\("([a-z_]+)"', source)))
+    keys = _keys_the_loader_reads(source)
+    assert len(keys) > 15, (
+        f"only {len(keys)} config keys were found in config.py, which means "
+        f"this guard has stopped seeing most of them again - it went blind "
+        f"once already and nothing said so")
     missing = [k for k in keys if k not in text]
     assert not missing, (
-        f"load_config reads {missing} and the sample never mentions them. A "
+        f"config.py reads {missing} and the sample never mentions them. A "
         f"setting nobody documents is one nobody knows about.")
 
 

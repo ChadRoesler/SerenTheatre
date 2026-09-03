@@ -246,6 +246,20 @@ class ArchiveConfig:
     # move HOME without this having been frozen at import - same as recipes.
     dsn: str = ""
     blobs: str = ""
+    # THE ONE PLACE THIS STORE CAN GET BIG, and it is worth a knob because the
+    # docstring above promises the opposite. Harvest copies three small
+    # documents and nothing else - that is the whole design. A prompt book is
+    # different: `ms-moe-maker bundle --with-data` carries the synth corpora,
+    # which is exactly what you want when the recipe generates its own data and
+    # is exactly how a shelf of "small documents" becomes forty gigabytes.
+    #
+    # So the ceiling is a real setting rather than a constant somebody has to
+    # patch, and it is checked on the way IN - both for a bundle exported here
+    # and for one somebody uploads. A refusal that names the size is a fine
+    # answer; a full disk on a box that was mid-build is not.
+    #
+    # 0 means no ceiling, for the person who knows what they are doing.
+    max_bundle_mb: int = 2048
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "ArchiveConfig":
@@ -253,7 +267,8 @@ class ArchiveConfig:
             return cls()
         return cls(enabled=bool(d.get("enabled", True)),
                    dsn=str(d.get("dsn") or ""),
-                   blobs=str(d.get("blobs") or ""))
+                   blobs=str(d.get("blobs") or ""),
+                   max_bundle_mb=int(d.get("max_bundle_mb", 2048) or 0))
 
     def resolved_dsn(self) -> str:
         return self.dsn or str(Path.home() / "seren-theatre" / "archive.db")
@@ -261,6 +276,10 @@ class ArchiveConfig:
     def blobs_dir(self) -> Path:
         raw = self.blobs or str(Path.home() / "seren-theatre" / "blobs")
         return Path(os.path.expanduser(raw)).resolve()
+
+    def max_bundle_bytes(self) -> int:
+        """The ceiling in bytes, or 0 for none."""
+        return max(0, int(self.max_bundle_mb)) * 1024 * 1024
 
 
 @dataclass

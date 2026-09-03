@@ -2190,6 +2190,119 @@ function bsRefusalHtml(detail, ran) {
       + '</div>';
 }
 
+// ── export: a recipe here becomes a prompt book on the shelf ────────────────
+//
+// THE GAP THIS CLOSES. Backstage could write a recipe and start a build from
+// it; the Repertoire could receive a bundle somebody else made. Nothing here
+// could MAKE one - so the answer to "send me that gauntlet" was still "ssh in
+// and run ms-moe-maker bundle", from a room that exists so you do not have to.
+//
+// A FORM RATHER THAN A BUTTON, for one reason: --with-data. A bundle of a
+// recipe is kilobytes; a bundle WITH the synth corpora is however big the
+// corpora are. The checkbox is where that sentence gets said, and a one-click
+// export that sometimes produces three gigabytes is a button nobody presses
+// twice.
+function bsExportFormHtml(name) {
+    return '<div class="xp">'
+      + '<div class="xp-head">Export <b>' + escapeHtml(name) + '</b>'
+      + ' as a prompt book</div>'
+      + '<div class="xp-what">The recipe is resolved <i>here</i> and the'
+      + ' answers written back into it, so there is nothing left for the far'
+      + ' box to decide. It lands on the Repertoire shelf, where you can read'
+      + ' it, download the zip and pass it on.</div>'
+      + '<label class="xp-label" for="bs-notes">Notes to carry along'
+      + ' <span class="hint">— the half a recipe cannot say. What this was'
+      + ' for, which knob mattered, what you would try next.</span></label>'
+      + '<textarea id="bs-notes" spellcheck="false" placeholder="# Handoff'
+      + '&#10;&#10;router.epochs is the knob."></textarea>'
+      + '<label class="xp-check"><input type="checkbox" id="bs-withdata">'
+      + ' include the synth corpora'
+      + '<span class="hint"> — off by default. A synth corpus runs to'
+      + ' gigabytes, and a surprise 3 GB download is a worse gift than a small'
+      + ' one plus a sentence. Turn it on when the recipe generates its own'
+      + ' data and the far box cannot.</span></label>'
+      + '<div class="xp-go"><button id="bs-bundle" class="primary">'
+      + 'Bundle it</button></div>'
+      + '</div>';
+}
+
+function bsExportedHtml(out) {
+    const href = '/api/books/' + encodeURIComponent(out.book_id) + '/bundle';
+    // EXECUTABLE CONTENT, IN FRONT OF A PERSON. The same warning the shelf
+    // gives, said at the moment you are about to hand the thing to somebody -
+    // which is when it matters most, because it is about to become THEIR
+    // problem on THEIR machine.
+    const runs = (out.executes && out.executes.length)
+        ? '<div class="xp-warn"><b>This recipe runs code.</b> Whoever stages'
+          + ' it will execute:<ul>'
+          + out.executes.map((e) => '<li><code>' + escapeHtml(e)
+                                  + '</code></li>').join('')
+          + '</ul>Say so when you send it.</div>'
+        : '';
+    const data = (out.data_experts && out.data_experts.length)
+        ? '<div class="xp-row"><span>corpora</span><b>'
+          + out.data_experts.map(escapeHtml).join(', ') + '</b></div>'
+        : '';
+    // NOT A NEW FILE, AND SAYING SO. `bundle` stamps the time, so an unchanged
+    // recipe exported twice is different bytes - the shelf would fill with
+    // timestamp-twins. It reuses the row instead, and a person who clicked
+    // Export and saw nothing appear would reasonably think it failed.
+    const reused = out.reused
+        ? '<div class="xp-note">You already had this one — same build, same'
+          + ' notes — so nothing new was made. The row below is it.</div>'
+        : '';
+    const bad = (out.validated && out.validated.ok === false)
+        ? '<div class="xp-warn"><b>Bundled, but it does not validate here.</b>'
+          + ' A draft is a legitimate thing to keep; it will not build as it'
+          + ' stands.<pre>' + escapeHtml(out.validated.output || '') + '</pre>'
+          + '</div>'
+        : '';
+    return '<div class="xp xp-done">'
+      + '<div class="xp-head">Bundled <b>' + escapeHtml(out.name) + '</b></div>'
+      + reused
+      + '<div class="xp-row"><span>size</span><b>'
+      + (out.bytes > 1e6 ? (out.bytes / 1e6).toFixed(1) + ' MB'
+                         : Math.round(out.bytes / 1024) + ' KB') + '</b></div>'
+      + data
+      + '<div class="xp-row"><span>id</span><code>'
+      + escapeHtml(String(out.book_id).slice(0, 16)) + '…</code></div>'
+      + runs + bad
+      + '<div class="xp-go"><a class="btn" href="' + href + '">Download the zip'
+      + '</a><span class="hint">It is on the Repertoire shelf too, and stays'
+      + ' there.</span></div>'
+      // THE SIXTEEN FIELDS THAT CANNOT TRAVEL. `bundle` prints them by name
+      // with this box's values, every time, and this is the only place a
+      // person using Theatre would ever see that list. Folded, because it is
+      // read once, and kept, because it is the honest part of the promise.
+      + (out.output
+         ? '<details class="xp-said"><summary>what the exporter said, '
+           + 'including the fields that cannot travel in a recipe</summary>'
+           + '<pre>' + escapeHtml(out.output) + '</pre></details>' : '')
+      + '</div>';
+}
+
+function bsExportFailedHtml(err) {
+    const d = (err && err.detail) || {};
+    const text = (typeof d === 'object' ? d.text : d)
+                 || (err && err.message) || String(err);
+    if (!d || !d.stamper_drift) return '<pre class="bad">'
+                                     + escapeHtml(text) + '</pre>';
+    // THE STAMPER REFUSED ITSELF, and that is a different sentence from "your
+    // recipe is wrong". The exporter loaded its own output back, resolved it,
+    // and found a field that did not survive the round trip - so it wrote
+    // nothing rather than hand somebody a bundle that rebuilds to a different
+    // model. Rendering it as a user error would send Chad hunting his recipe
+    // for a bug that is in ms-moe-maker's knob table.
+    return '<div class="drift">'
+      + '<div class="dr-head">The exporter refused its own output.</div>'
+      + '<div class="dr-kept">Nothing was written. The stamped recipe did not'
+      + ' rebuild to the same fingerprint, so the bundle would have built'
+      + ' something other than what it claims. <b>This is a bug in the'
+      + ' exporter, not in your recipe</b> — the fields it names are missing a'
+      + ' <code>recipe=</code> path in the builder\'s knob table.</div>'
+      + '<pre class="dr-raw">' + escapeHtml(text) + '</pre></div>';
+}
+
 async function bsRun(name, dryrun, force) {
     // ONE CALL SITE for the Run button and the force button both. Two of these
     // is how the second one quietly stops sending a field the first one sends.
@@ -2331,6 +2444,27 @@ document.addEventListener('click', async (e) => {
             bsShow(out.validation.ok,
                    `saved ${out.saved}\n\n${out.validation.output}`);
             await loadBackstage();
+        } else if (id === 'bs-export') {
+            if (!name) return bsShow(false, 'save it first, then export it');
+            $('bs-out').innerHTML = bsExportFormHtml(name);
+        } else if (id === 'bs-bundle') {
+            if (!name) return bsShow(false, 'save it first, then export it');
+            const notes = $('bs-notes') ? $('bs-notes').value : '';
+            const withData = !!($('bs-withdata') && $('bs-withdata').checked);
+            $('bs-out').innerHTML = '<div class="hint">'
+                + (withData ? 'bundling, corpora and all — this can take a '
+                            + 'while…' : 'bundling…') + '</div>';
+            try {
+                $('bs-out').innerHTML = bsExportedHtml(
+                    await bsPost('/api/backstage/export',
+                                 { name, notes, with_data: withData }));
+                // The shelf just changed. Re-reading it here means the
+                // Repertoire tab is already right when somebody switches to
+                // it, rather than looking empty until they hit Refresh.
+                if (typeof loadRepertoire === 'function') await loadRepertoire();
+            } catch (err) {
+                $('bs-out').innerHTML = bsExportFailedHtml(err);
+            }
         } else if (id === 'bs-run') {
             if (!name) return bsShow(false, 'save it first, then run it');
             // NEVER force from here. --force lives on the refusal panel and

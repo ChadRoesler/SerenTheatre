@@ -107,6 +107,39 @@ class RunBody(BaseModel):
     force: bool = False
 
 
+class ExportBody(BaseModel):
+    """Make a prompt book out of a recipe on this shelf.
+
+    NOTES ARE TEXT HERE AND A PATH ON THE COMMAND LINE, and that is the one
+    place this deliberately differs from `ms-moe-maker bundle`. The CLI takes
+    `--notes some.md` because it is run by somebody who has a file; a browser
+    has a textarea and no filesystem. So the text is written to a temp file and
+    the documented flag is used on it - the fork still runs the real command,
+    which is the whole reason for forking.
+    """
+    name: str
+    notes: str = ""
+    # OFF BY DEFAULT, exactly as the CLI has it, and for the same reason its
+    # help text gives: a synth corpus runs to gigabytes and a surprise 3 GB
+    # download is a worse gift than a small one plus a sentence.
+    with_data: bool = False
+    stage: Optional[str] = None
+
+
+# A bundle of a recipe with no corpora is kilobytes; --with-data is however big
+# the corpora are, and zipping those is real work on a Nano. Long enough that a
+# genuine bundle finishes, short enough that a wedged fork does not hold a
+# request open until somebody notices.
+BUNDLE_TIMEOUT = 900.0
+# What `bundle` returns when the STAMPER could not round-trip - the exporter
+# loads its own output back and refuses to write a bundle that would rebuild to
+# a different fingerprint. Named because Theatre reports it differently from
+# every other non-zero: it is a refusal with a diff in it, not a crash.
+BUNDLE_DRIFT_EXIT = 2
+# Notes are a covering letter, not a chapter.
+MAX_NOTES_BYTES = 256 * 1024
+
+
 def _safe_recipe_path(cfg, name: str) -> Path:
     if not _SAFE_NAME.match(name or ""):
         raise HTTPException(
@@ -424,6 +457,148 @@ def router() -> APIRouter:
         started["stage"] = stage.name
         return started
 
+    @api.post("/export")
+    def export(body: ExportBody, request: Request) -> dict:
+        """A recipe on this shelf -> a prompt book on the shelf next to it.
+
+        THE GAP THIS CLOSES. Backstage could write a recipe and start a build
+        from it; the Repertoire could receive a bundle somebody else made and
+        hand it back out. What it could not do was make one - so the answer to
+        "send me that gauntlet" was still "ssh in and run `ms-moe-maker
+        bundle`", from a room whose entire purpose is that you should not have
+        to.
+
+        WHY IT LANDS ON THE SHELF RATHER THAN COMING BACK AS A DOWNLOAD.
+        Because the shelf already does the rest of the job: it lists what you
+        have, shows the recipe and the notes without unpacking, warns when a
+        recipe would run somebody's script, keeps the bytes somewhere a
+        closed tab cannot lose them, and hands the zip out at
+        /api/books/<id>/bundle - the same route, byte for byte, that the
+        person you send it to will check against their copy. Returning the file
+        directly would mean a second delivery path to keep working, and the one
+        that already exists is the better one.
+
+        The book_id IS the content hash, which makes "we are looking at the
+        same book" a checkable claim rather than an asserted one. It does NOT
+        make exporting twice idempotent, and finding that out cost a paragraph:
+        `bundle` stamps the time into the recipe header and into the metadata,
+        so an unchanged recipe exported twice is different BYTES. Identity by
+        hash is still right; it is simply answering a different question from
+        "have I already got this". See _same_book_already for the one that
+        keeps the shelf from filling with timestamp-twins.
+
+        FORK, NEVER IMPORT, for the third time in this module and the same
+        reason: `bundle` resolves the recipe against THIS box's defaults and
+        stamps the answers in. Reimplementing that here would mean a second
+        stamper, and the failure mode of a second stamper is a bundle that says
+        it rebuilds to a build_id it does not rebuild to - discovered by the
+        person you gave it to, on their GPU booking.
+        """
+        cfg = request.app.state.cfg
+        archive = request.app.state.open_archive()
+        if archive is None:
+            raise HTTPException(
+                503, f"the archive is not available, so there is nowhere to "
+                     f"put a prompt book: "
+                     f"{request.app.state.archive_error or 'disabled'}")
+
+        path = _safe_recipe_path(cfg, body.name)
+        if not path.is_file():
+            raise HTTPException(404, f"no recipe named {body.name!r}")
+        if len(body.notes.encode("utf-8")) > MAX_NOTES_BYTES:
+            raise HTTPException(413, "the notes are a covering letter, not a "
+                                     "chapter")
+
+        # IN THE STAGE, because that is where a build would run and therefore
+        # where the recipe's roots resolve. `bundle --with-data` looks for the
+        # corpora under the resolved data_root; run it anywhere else and it
+        # honestly reports finding none, which reads as "this recipe has no
+        # corpora" rather than as "I looked in the wrong place".
+        stage = _stage_for(cfg, body.stage)
+        cwd = stage.resolved()
+        if not cwd.is_dir():
+            raise HTTPException(409, f"stage {stage.name!r} is not on disk: {cwd}")
+
+        import tempfile
+
+        work = Path(tempfile.mkdtemp(prefix="theatre-bundle-"))
+        # OUTSIDE EVERY STAGE, proved rather than assumed. mkdtemp lands in the
+        # system temp dir and cannot be inside a stage on any sane box - and
+        # "cannot happen" is how it happens, so it is checked. The zip is an
+        # artifact of the viewer, and a viewer that writes into a watched
+        # directory has started doing the work.
+        assert_outside_stages(work, cfg)
+        out = work / "bundle.zip"
+        try:
+            argv = list(stagehand.resolve_command()) + [
+                "bundle", str(path), "--out", str(out)]
+            if body.with_data:
+                argv.append("--with-data")
+            if body.notes.strip():
+                notes_file = work / "notes.md"
+                notes_file.write_text(body.notes, encoding="utf-8")
+                argv += ["--notes", str(notes_file)]
+
+            try:
+                proc = subprocess.run(argv, cwd=str(cwd), capture_output=True,
+                                      text=True, timeout=BUNDLE_TIMEOUT)
+            except stagehand.StagehandUnavailable as exc:
+                raise HTTPException(503, str(exc)) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise HTTPException(
+                    504, f"`bundle` did not finish in {BUNDLE_TIMEOUT:.0f}s. "
+                         f"With --with-data that can mean the corpora are "
+                         f"very large rather than that anything is wrong."
+                    ) from exc
+
+            said = (proc.stdout or "") + (proc.stderr or "")
+            if proc.returncode != 0:
+                # A DRIFT REFUSAL IS NOT A SERVER ERROR, the same argument the
+                # run route makes about a resume refusal. The exporter loaded
+                # its own output back, resolved it, found a field that did not
+                # survive the round trip, and declined to write a bundle that
+                # would build something else. That is the tool working, and it
+                # names the fields. 409 says "this conflicts with what this box
+                # can currently do"; 500 would point at Theatre.
+                status = 409 if proc.returncode == BUNDLE_DRIFT_EXIT else 500
+                raise HTTPException(status, {
+                    "text": said.strip() or f"`bundle` exited "
+                                            f"{proc.returncode} and said "
+                                            f"nothing",
+                    "exit_code": proc.returncode,
+                    "command_line": " ".join(argv),
+                    "stamper_drift": proc.returncode == BUNDLE_DRIFT_EXIT,
+                })
+            if not out.is_file():
+                # SAID IT WORKED AND WROTE NOTHING. Reported rather than
+                # turned into a 500 further down, because the difference
+                # between "the fork failed" and "the fork lied" is the whole
+                # first half of an hour of debugging.
+                raise HTTPException(500, {
+                    "text": f"`bundle` exited 0 and wrote no file at {out}. "
+                            f"What it said:\n\n{said.strip()}",
+                    "exit_code": 0, "command_line": " ".join(argv),
+                    "stamper_drift": False})
+
+            shelved = _shelve(cfg, archive, out,
+                              name=body.name.rsplit(".", 1)[0], reuse=True)
+        finally:
+            # The zip is on the shelf by now, content-addressed. This directory
+            # existing afterwards would be a second copy nothing points at.
+            import shutil as _shutil
+            _shutil.rmtree(work, ignore_errors=True)
+
+        shelved["exported"] = True
+        shelved["with_data"] = bool(body.with_data)
+        shelved["stage"] = stage.name
+        # THE COMMAND'S OWN OUTPUT, kept. It prints the sixteen fields that
+        # cannot travel in a recipe and their values on THIS box, and the size
+        # of the corpora it did not include. Both are things the person doing
+        # the sending needs to read once, and neither is anywhere else.
+        shelved["output"] = said.strip()
+        shelved["command_line"] = " ".join(argv)
+        return shelved
+
     # ── the repertoire: prompt books ────────────────────────────────────────
     #
     # A PROMPT BOOK is a recipe bundle somebody can stage again - the stage
@@ -465,67 +640,18 @@ def router() -> APIRouter:
             raise HTTPException(400, "no bundle in the request body")
 
         import tempfile
-        from .archive import blobs as _blobs
-        from .archive import bundle as _bundle
 
         handle, tmp = tempfile.mkstemp(suffix=".zip")
         os.close(handle)
         tmp_path = Path(tmp)
         try:
             tmp_path.write_bytes(raw)
-            try:
-                got = _bundle.read(tmp_path)
-            except _bundle.UnreadableBundle as exc:
-                # THE ONLY REFUSAL. Not "this recipe is wrong" - that is a
-                # judgement somebody else's box is entitled to disagree with -
-                # but "this archive is not safe to open", which is not a
-                # matter of opinion.
-                raise HTTPException(400, str(exc)) from exc
-
-            store = _blobs.Blobs(assert_outside_stages(cfg.archive.blobs_dir(),
-                                                       cfg))
-            digest = store.put(tmp_path)
+            return _shelve(cfg, archive, tmp_path, name=name)
         finally:
             try:
                 tmp_path.unlink()
             except OSError:
                 pass
-
-        meta = got["meta"] or {}
-        # RE-IMPORTING MUST NOT RENAME WHAT IS ALREADY ON THE SHELF. The id is
-        # the content hash, so importing the same zip twice is one row - and
-        # the upsert would otherwise reset a name somebody chose back to
-        # whatever the bundle calls itself. An explicit ?name= still wins,
-        # because that is somebody saying it on purpose.
-        existing = archive.prompt_book(digest)
-        kept_name = (existing or {}).get("name") or ""
-        book = {
-            # THE CONTENT HASH IS THE ID. Importing the same bundle twice is
-            # one row, not two, and it is the same row your friend has - which
-            # makes "we are looking at the same book" checkable rather than
-            # asserted.
-            "book_id": digest,
-            "name": str(name or kept_name or meta.get("name") or "untitled"),
-            "created": meta.get("created"),
-            "imported": time.time(),
-            "build_id": str(meta.get("build_id") or ""),
-            "bytes": int(got["bytes"]),
-            # EXTRACTED FOR VIEWING, per the shape of the thing: you should be
-            # able to read what you were given without unpacking it.
-            "recipe": got["recipe"],
-            "notes": got["notes"],
-            "meta": json.dumps(meta, sort_keys=True),
-        }
-        archive.put_prompt_book(book)
-
-        checked = _validate_text(cfg, got["recipe"])
-        return {"book_id": digest, "name": book["name"],
-                "bytes": book["bytes"], "data_experts": got["data_experts"],
-                "meta_error": got["meta_error"],
-                # IN FRONT OF A PERSON, not in a log. A recipe naming an
-                # eval.script runs that script with the interpreter.
-                "executes": got["executes"],
-                "validated": checked}
 
     @api.delete("/books/{book_id}")
     def delete_book(book_id: str, request: Request) -> dict:
@@ -560,6 +686,156 @@ def router() -> APIRouter:
         return {"deleted": book_id, "bytes_freed": freed}
 
     return api
+
+
+def _same_book_already(cfg, archive, meta: Dict[str, Any], notes: str,
+                       name: str, data_experts) -> Optional[Dict[str, Any]]:
+    """A row that is this bundle in every way that means anything.
+
+    THE PROBLEM, FOUND BY EXPORTING TWICE. book_id is the content hash, which
+    is the right answer to "did my friend get the same file I did" and the
+    wrong one to "have I already exported this". `bundle` stamps the time into
+    the recipe header and into meta.created, so two exports of an UNCHANGED
+    recipe are different bytes, different hash, two rows - and a shelf fills up
+    with timestamp-twins in about four clicks.
+
+    So identity stays the hash, and this answers the other question honestly:
+    same build_id, same notes, same name, same corpora. Everything that
+    describes what the bundle IS, minus when it was made. If one matches, the
+    new zip is dropped and the existing row is handed back - which also means
+    the file you already sent somebody stays the file on the shelf.
+
+    A bundle with NO build_id never matches. It makes no claim, so there is
+    nothing to say two of them are the same.
+
+    THE CORPORA ARE COMPARED FROM THE STORED ZIP, not from the row. Which
+    corpora a bundle carries is not a column - and it must be part of this,
+    because `--with-data` and a plain export of the same recipe share a
+    build_id, share notes, share a name, and are the two things you would least
+    like handed to you in place of each other. So a candidate that has passed
+    every cheap check gets its blob opened and asked. That reads one zip, and
+    only for a row that already matched on three fields, which is nearly never
+    more than one row.
+
+    A candidate whose bytes are missing does not match. Unknown is not equal;
+    failing toward "make a new one" costs a duplicate row and failing the other
+    way hands somebody the wrong file.
+    """
+    build_id = str(meta.get("build_id") or "")
+    if not build_id:
+        return None
+    from .archive import blobs as _blobs
+    from .archive import bundle as _bundle
+    want = sorted(data_experts or [])
+    store = _blobs.Blobs(cfg.archive.blobs_dir())
+    for row in archive.prompt_books():
+        if str(row.get("build_id") or "") != build_id:
+            continue
+        if (row.get("notes") or "") != (notes or ""):
+            continue
+        if name and (row.get("name") or "") != name:
+            continue
+        try:
+            theirs = _bundle.read(store.path_for(row["book_id"]))
+        except (_blobs.BlobError, _bundle.UnreadableBundle, OSError):
+            continue
+        if sorted(theirs["data_experts"]) != want:
+            continue
+        return row
+    return None
+
+
+def _shelve(cfg, archive, zip_path: Path, name: str = "",
+            reuse: bool = False) -> Dict[str, Any]:
+    """Put a bundle on the shelf. THE ONE PATH, for both ways one arrives.
+
+    A bundle reaches this box two ways - somebody uploads a zip they were
+    given, or Backstage exports one from a recipe here - and everything after
+    "there is a zip" is identical: read it, refuse it if it is not safe to
+    open, weigh it, store the bytes, write the row. Two copies of that would
+    drift, and they would drift in the direction that matters: the import path
+    checks the zip for absolute paths, `..` and symlinks, and a second copy
+    that forgot one of those is a security check with a hole in it.
+
+    So export does not get its own storing code. It gets this one.
+    """
+    from .archive import blobs as _blobs
+    from .archive import bundle as _bundle
+
+    try:
+        got = _bundle.read(zip_path)
+    except _bundle.UnreadableBundle as exc:
+        # THE ONLY REFUSAL ON CONTENT. Not "this recipe is wrong" - that is a
+        # judgement somebody else's box is entitled to disagree with - but
+        # "this archive is not safe to open", which is not a matter of opinion.
+        raise HTTPException(400, str(exc)) from exc
+
+    # THE CEILING, CHECKED BEFORE THE COPY rather than after. The blob store is
+    # designed around small documents; a --with-data bundle is the one thing
+    # that can put gigabytes in it. Refusing by name and size is a fine answer.
+    # Filling the disk of a box that is nine hours into a build is not.
+    ceiling = cfg.archive.max_bundle_bytes()
+    size = int(got["bytes"])
+    if ceiling and size > ceiling:
+        raise HTTPException(
+            413, f"this bundle is {size / 1e6:.0f} MB and archive."
+                 f"max_bundle_mb is {cfg.archive.max_bundle_mb}. Raise it, or "
+                 f"set it to 0 for no ceiling, or bundle without the corpora.")
+
+    meta = got["meta"] or {}
+
+    # BEFORE THE COPY, so an export that changes nothing does not put a second
+    # near-identical zip in the store. Only export asks for this: a re-uploaded
+    # identical file already collapses to one row by hash, and an upload that
+    # differs is somebody else's bundle and gets its own row whatever it
+    # resembles.
+    if reuse:
+        same = _same_book_already(cfg, archive, meta, got["notes"] or "",
+                                  name, got["data_experts"])
+        if same is not None:
+            return {"book_id": same["book_id"],
+                    "name": same.get("name") or name,
+                    "bytes": int(same.get("bytes") or 0),
+                    "data_experts": got["data_experts"],
+                    "meta_error": got["meta_error"],
+                    "executes": got["executes"],
+                    "reused": True,
+                    "validated": _validate_text(cfg, got["recipe"])}
+
+    store = _blobs.Blobs(assert_outside_stages(cfg.archive.blobs_dir(), cfg))
+    digest = store.put(zip_path)
+    # RE-SHELVING MUST NOT RENAME WHAT IS ALREADY THERE. The id is the content
+    # hash, so the same zip twice is one row - and the upsert would otherwise
+    # reset a name somebody chose back to whatever the bundle calls itself. An
+    # explicit name still wins, because that is somebody saying it on purpose.
+    existing = archive.prompt_book(digest)
+    kept_name = (existing or {}).get("name") or ""
+    book = {
+        # THE CONTENT HASH IS THE ID. The same bundle twice is one row, not
+        # two, and it is the same row your friend has - which makes "we are
+        # looking at the same book" checkable rather than asserted. It also
+        # means exporting an unchanged recipe twice does not litter the shelf.
+        "book_id": digest,
+        "name": str(name or kept_name or meta.get("name") or "untitled"),
+        "created": meta.get("created"),
+        "imported": time.time(),
+        "build_id": str(meta.get("build_id") or ""),
+        "bytes": size,
+        # EXTRACTED FOR VIEWING, per the shape of the thing: you should be
+        # able to read what you were given without unpacking it.
+        "recipe": got["recipe"],
+        "notes": got["notes"],
+        "meta": json.dumps(meta, sort_keys=True),
+    }
+    archive.put_prompt_book(book)
+
+    return {"book_id": digest, "name": book["name"], "bytes": size,
+            "data_experts": got["data_experts"],
+            "meta_error": got["meta_error"], "reused": False,
+            # IN FRONT OF A PERSON, not in a log. A recipe naming an
+            # eval.script runs that script with the interpreter.
+            "executes": got["executes"],
+            "validated": _validate_text(cfg, got["recipe"])}
 
 
 def _validate_text(cfg, text: str) -> Dict[str, Any]:
