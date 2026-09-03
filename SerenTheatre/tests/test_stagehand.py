@@ -361,3 +361,138 @@ def test_output_files_that_cannot_be_opened_fail_loudly_at_launch(
             tmp_path / "r.yaml", cwd=tmp_path,
             log_file=tmp_path / "no" / "such" / "dir" / "run.log",
             events_file=tmp_path / "run.jsonl")
+
+
+# ── the OTHER stream ────────────────────────────────────────────────────────
+#
+# A build that dies on arrival writes two things: prose on stderr, which the
+# marker already kept as `log_tail`, and JSON Lines on stdout, which it threw
+# away. The prose is what a person reads. The events are what a UI can act on -
+# and ms-moe-maker's resume refusal now emits the finished stages, the field
+# diff and the ways out as lists, in a file this module already knows the name
+# of. Keeping only the prose is how the operator ends up copying a flag out of
+# a <pre> and typing it into a terminal.
+
+
+def test_the_last_error_event_is_read_from_the_events_file(tmp_path):
+    events = tmp_path / "run.jsonl"
+    events.write_text(
+        '{"event": "started", "recipe": "x.yaml"}\n'
+        '{"event": "warning", "message": "first"}\n'
+        '{"event": "error", "stage": "build", "refusal": "resume_drift",'
+        ' "finished": ["preflight"]}\n'
+        '{"event": "done", "ok": false}\n', encoding="utf-8")
+    got = stagehand._last_error_event(events)
+    assert got is not None
+    assert got["refusal"] == "resume_drift"
+    assert got["finished"] == ["preflight"]
+
+
+def test_the_LAST_error_wins(tmp_path):
+    """Two errors means the later one is likelier to be why it stopped."""
+    events = tmp_path / "run.jsonl"
+    events.write_text(
+        '{"event": "error", "stage": "corpus", "message": "first"}\n'
+        '{"event": "error", "stage": "build", "message": "second"}\n',
+        encoding="utf-8")
+    assert stagehand._last_error_event(events)["message"] == "second"
+
+
+def test_a_half_read_line_is_skipped_not_repaired(tmp_path):
+    """The tail is read from a byte offset, so the first line is usually a
+    fragment. A half-read event is not an event."""
+    events = tmp_path / "run.jsonl"
+    events.write_text(
+        '{"event": "error", "stage": "build", "message": "real"}\n',
+        encoding="utf-8")
+    # A window that lands mid-line must return None or a WHOLE event - never
+    # a guess assembled from a fragment, and never an exception.
+    got = stagehand._last_error_event(events, limit=20)
+    assert got is None or got["message"] == "real"
+    assert stagehand._last_error_event(events, limit=4096)["message"] == "real"
+
+
+def test_nothing_structured_is_None_not_an_empty_dict(tmp_path):
+    """AN OLDER BUILDER SAID NOTHING, and that is a real answer.
+
+    Returning {} here would reach a viewer as "a refusal with no changes",
+    which is a sentence about the run rather than about our ignorance - the
+    exact failure this repo keeps finding.
+    """
+    events = tmp_path / "run.jsonl"
+    events.write_text('{"event": "done", "ok": false}\n', encoding="utf-8")
+    assert stagehand._last_error_event(events) is None
+    assert stagehand._last_error_event(tmp_path / "nope.jsonl") is None
+    assert stagehand._last_error_event(None) is None
+
+
+def test_a_damaged_events_file_never_raises(tmp_path):
+    events = tmp_path / "run.jsonl"
+    events.write_bytes(b'\xff\xfe not json at all\n{"event": "error"')
+    assert stagehand._last_error_event(events) is None
+
+
+def test_an_event_bigger_than_a_tail_window_is_still_found(tmp_path):
+    """THE ROUND THIS COST, written down so nobody re-derives it.
+
+    The first version of _last_error_event tailed the last 8 KB, by analogy
+    with the log tail. It found nothing against a real refusal, every time -
+    because the refusal event is the LARGEST LINE IN THE FILE. A resume
+    refusal on a 92-field config carries every changed field twice, as prose
+    and as a table, and lands around 13 KB on one line, near the START of a
+    file whose remaining events are tiny. The window fell in the middle of it,
+    the fragment did not parse, and the reader honestly reported nothing.
+
+    A null result that was entirely an artefact of how we looked. This fixture
+    is that shape on purpose: one enormous event, then small ones after it.
+    """
+    big = {"event": "error", "stage": "build", "refusal": "resume_drift",
+           "changed": [f"field_{i}: 'was_{i}' -> 'now_{i}'" for i in range(400)]}
+    line = json.dumps(big)
+    assert len(line) > 8192, ("this fixture no longer reproduces the bug - it "
+                             "has to be bigger than any plausible tail window")
+    events = tmp_path / "run.jsonl"
+    events.write_text(line + "\n" + '{"event": "done", "ok": false}\n',
+                      encoding="utf-8")
+
+    got = stagehand._last_error_event(events)
+    assert got is not None, (
+        "a refusal larger than the read window vanished - which is exactly "
+        "how this looked when it was broken: no error, no warning, just a "
+        "viewer quietly reporting that the builder said nothing")
+    assert len(got["changed"]) == 400
+
+
+def test_an_oversized_file_is_not_slurped(tmp_path):
+    """The ceiling still has to be a ceiling. A build that dies LATE can leave
+    a genuinely large event log, and a viewer must not read it all to answer
+    one question."""
+    events = tmp_path / "run.jsonl"
+    with open(events, "w", encoding="utf-8") as fh:
+        for i in range(5000):
+            fh.write(json.dumps({"event": "progress", "id": "x", "n": i,
+                                 "pad": "y" * 200}) + "\n")
+        fh.write(json.dumps({"event": "error", "stage": "build",
+                             "message": "the last word"}) + "\n")
+    assert events.stat().st_size > 200_000
+    got = stagehand._last_error_event(events, limit=50_000)
+    assert got["message"] == "the last word", (
+        "the error at the END of an oversized file was missed; the fallback "
+        "tail still has to reach the most recent event")
+
+
+def test_a_truncated_log_tail_does_not_open_mid_character(tmp_path):
+    """The builder prints a \u00b7 per changed field, so a byte window landing
+    inside one opened the panel with a replacement glyph and half a sentence.
+    A fragment shown as content is a small lie about what the program said."""
+    log = tmp_path / "run.log"
+    log.write_text("\n".join(f"    \u00b7 field_{i}: 'a' -> 'b'"
+                              for i in range(400)) + "\n", encoding="utf-8")
+    tail = stagehand._log_tail(log, limit=2048)
+    assert tail and "\ufffd" not in tail, repr(tail[:80])
+    assert tail.lstrip().startswith("\u00b7"), repr(tail[:80])
+    # And a log that FITS keeps its first line - the trim is for truncation
+    # only, not a line tax on every message.
+    short = tmp_path / "short.log"
+    short.write_text("first line\nsecond line\n", encoding="utf-8")
+    assert stagehand._log_tail(short, limit=4096).startswith("first line")
