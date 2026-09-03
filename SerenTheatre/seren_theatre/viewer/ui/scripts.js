@@ -1887,14 +1887,27 @@ async function loadBackstage() {
         // The form is built from the LIVE registries, so a kind or validator
         // added by a plugin shows up here without this file having heard of
         // it. A hardcoded list would make "extensible" true only for us.
+        // ONE ROW SHAPE FOR THE WHOLE PANEL: a fixed-width name column and a
+        // description that wraps under itself. Every section here is the same
+        // kind of thing - a name, what it does, and sometimes a caveat - and
+        // giving them one shape lets the eye scan the names down a straight
+        // edge instead of hunting for them mid-sentence.
+        const row = (name, body, note) =>
+            `<div class="ref-row"><code>${escapeHtml(name)}</code>`
+            + `<div class="ref-text">${body}`
+            + (note ? ` <span class="hint">${note}</span>` : '')
+            + `</div></div>`;
+        const section = (title, rows) => rows
+            ? `<div class="ref-block"><h5>${escapeHtml(title)}</h5>${rows}</div>`
+            : '';
+
         const kinds = (BACKSTAGE.kinds || []).map(
-            (k) => `<li><code>${escapeHtml(k.name)}</code> — ${escapeHtml(k.summary)}`
-                 + (k.requires.length ? ` <span class="hint">(needs ${
-                     k.requires.map(escapeHtml).join(', ')})</span>` : '')
-                 + `</li>`).join('');
+            (k) => row(k.name, escapeHtml(k.summary),
+                       (k.requires || []).length
+                           ? `needs ${k.requires.map(escapeHtml).join(', ')}`
+                           : '')).join('');
         const vals = (BACKSTAGE.validators || []).map(
-            (v) => `<li><code>${escapeHtml(v.name)}</code> — ${escapeHtml(v.summary)}</li>`
-        ).join('');
+            (v) => row(v.name, escapeHtml(v.summary))).join('');
         // The tag table is the third registry, and the one people are told to
         // extend: a family shipping a new delimiter is meant to be answerable
         // with a yaml on the box, not a release. Showing the PACKAGED table to
@@ -1908,12 +1921,20 @@ async function loadBackstage() {
         (rz.styles || []).forEach((s) => { styleOf[s.key] = s; });
         const fams = (rz.families || []).map((f) => {
             const s = styleOf[f.style];
+            // THE DELIMITERS ARE THE POINT, not decoration. A wrong tag style
+            // is a wrong ANSWER: the splitter finds nothing, eval reports "did
+            // not reason", and the think block gets scored as if it were the
+            // answer. So they get their own line under the family rather than
+            // being run together with it.
             const tags = s
-                ? `<code>${escapeHtml(s.open)}</code>…<code>${escapeHtml(s.close)}</code>`
-                  + (s.interwoven ? ' <span class="hint">(interwoven)</span>' : '')
-                : `<span class="hint">unknown style ${escapeHtml(f.style)}</span>`;
-            return `<li><code>${escapeHtml(f.key)}</code> — ${escapeHtml(f.name)} `
-                 + `→ ${tags}</li>`;
+                ? `<div class="ref-tags"><code>${escapeHtml(s.open)}</code>`
+                  + `<span class="hint">…</span>`
+                  + `<code>${escapeHtml(s.close)}</code>`
+                  + (s.interwoven
+                      ? ' <span class="hint">interwoven</span>' : '') + `</div>`
+                : `<div class="ref-tags"><span class="warn">unknown style `
+                  + `${escapeHtml(f.style)}</span></div>`;
+            return row(f.key, escapeHtml(f.name) + tags);
         }).join('');
 
         // WHAT THE BOX SAID ABOUT ITSELF. Read off whatever `describe`
@@ -1921,9 +1942,9 @@ async function loadBackstage() {
         // shows up with no edit in this file - the same reason the registries
         // above are not a hardcoded list.
         const box = BACKSTAGE.box || {};
-        const boxRow = (k, v) => `<li><code>${escapeHtml(k)}</code> — ${
-            escapeHtml(Array.isArray(v) ? v.join(', ') : String(v))}</li>`;
-        const boxRows = Object.keys(box).map((k) => boxRow(k, box[k])).join('');
+        const boxRows = Object.keys(box).map((k) => row(
+            k, escapeHtml(Array.isArray(box[k]) ? box[k].join(', ')
+                                                : String(box[k])))).join('');
 
         // ERRORS WERE NEVER PAINTED. A corpus kind or validator whose entry
         // point failed to import is simply absent from the lists above, which
@@ -1932,7 +1953,7 @@ async function loadBackstage() {
         // say so on the screen, for the same reason eval keeps `unmeasurable`
         // apart from `fail` all the way to the front.
         const errs = (BACKSTAGE.errors || []).map(
-            (e) => `<li>${escapeHtml(e)}</li>`).join('');
+            (e) => `<div class="ref-err">${escapeHtml(e)}</div>`).join('');
 
         // WHICH INSTALL ANSWERED. Every line below this is a statement about
         // one specific binary, and until now it was attributed to none: a
@@ -1943,21 +1964,26 @@ async function loadBackstage() {
         // the manifest or from file activity.
         const pl = BACKSTAGE.pipeline || {};
         const plHtml = pl.command
-            ? `<b>answering install</b><ul><li><code>${escapeHtml(pl.command)}</code>`
-              + ` <span class="hint">(${escapeHtml(pl.source)}${
-                  pl.literal ? '' : ' — not the documented console script'})</span></li></ul>`
+            ? `<div class="ref-block"><h5>answering install</h5>`
+              + `<div class="ref-path"><code>${escapeHtml(pl.command)}</code></div>`
+              + `<div class="hint">resolved from ${escapeHtml(pl.source)}${
+                  pl.literal ? '' : ' — not the documented console script'}`
+              + `</div></div>`
             : '';
 
+        // ERRORS FIRST, then which install answered, then the registries.
+        // Every line below the second block is a statement ABOUT that install,
+        // so it has to be read before them rather than after.
         $('bs-help').innerHTML =
-            (errs ? `<b class="warn">the box could not answer everything</b>`
-                  + `<ul>${errs}</ul>` : '')
-            + plHtml
-            + `<b>source kinds on this box</b><ul>${kinds}</ul>`
-            + `<b>validators</b><ul>${vals}</ul>`
-            + (fams
-                ? `<b>reasoning families on this box</b><ul>${fams}</ul>`
+            (errs
+                ? `<div class="ref-block"><h5 class="warn">the box could not `
+                  + `answer everything</h5>${errs}</div>`
                 : '')
-            + (boxRows ? `<b>this install</b><ul>${boxRows}</ul>` : '');
+            + plHtml
+            + section('source kinds on this box', kinds)
+            + section('validators', vals)
+            + section('reasoning families on this box', fams)
+            + section('this install', boxRows);
     } catch (e) {
         const tab = $('tab-backstage');
         if (mounted === false) {
@@ -1994,15 +2020,204 @@ function bsShow(ok, text) {
 }
 
 async function bsPost(path, body, method) {
-    // `method` because DELETE is a write too and it would be silly to have a
-    // second near-identical helper for it. A null body sends no Content-Type
-    // and no payload, which is what a DELETE wants.
-    const init = { method: method || 'POST' };
+    // OUR OWN fetch, AND THE REASON IS THE WHOLE OF THIS PANEL'S HISTORY.
+    //
+    // The shell's api() does `if (!res.ok) throw new Error(status + " " +
+    // statusText)` and never reads the body. For a viewer that is fine: a
+    // failed GET has nothing to add. For a WRITE it threw away the only thing
+    // that mattered.
+    //
+    // What actually happened: ms-moe-maker refused to resume a run directory,
+    // named the two stages it would have inherited, listed nine changed
+    // fields and offered three ways out. Backstage put every word of that in
+    // the response. The browser showed `500 Internal Server Error` in a grey
+    // box, and the operator went and ssh'd into the box to tail a log for a
+    // message the program had already sent him.
+    //
+    // So this reads the body, always, and hands the caller `err.detail` -
+    // whatever FastAPI put there, dict or string. `err.status` too, because
+    // 409 (your recipe conflicts with that directory) and 500 (something
+    // broke in here) are different news and the panel says so differently.
+    //
+    // `method` because DELETE is a write too. A null body sends no
+    // Content-Type and no payload, which is what a DELETE wants.
+    const headers = {};
+    const tok = (typeof getToken === 'function') ? getToken() : '';
+    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+    const init = { method: method || 'POST', headers };
     if (body !== null && body !== undefined) {
-        init.headers = { 'Content-Type': 'application/json' };
+        headers['Content-Type'] = 'application/json';
         init.body = JSON.stringify(body);
     }
-    return api(path, init);
+    const res = await fetch(path, init);
+    const ct = res.headers.get('content-type') || '';
+    const payload = ct.includes('application/json')
+        ? await res.json().catch(() => null)
+        : await res.text().catch(() => '');
+    if (res.ok) return payload;
+    const detail = (payload && typeof payload === 'object'
+                    && 'detail' in payload) ? payload.detail : payload;
+    const err = new Error(res.status + ' ' + res.statusText);
+    err.status = res.status;
+    err.detail = detail;
+    throw err;
+}
+
+// ── a refusal, rendered as the choice it is ─────────────────────────────────
+//
+// THE DEAD END THIS REPLACES. The builder's resume refusal ends with "Pick
+// one:" and three options - and Backstage could perform none of them. It
+// printed the sentence offering `--force` into a <pre> and left the person to
+// go type it somewhere else. A refusal that names its own fix, in a room that
+// cannot reach the fix, is a dead end with good manners.
+//
+// The force button therefore exists ONLY HERE, inside the refusal, and never
+// as a checkbox on the run form. That is not tidiness. --force DISCARDS the
+// finished stages the refusal just listed, and on a real run those are twenty
+// minutes of abliteration on a booked GPU. A standing checkbox is something
+// you can leave ticked from last time; a button that only appears underneath
+// the list of what it destroys cannot be reached without having been handed
+// that list. Same gate as everywhere else in this stack: hands on the surface.
+function bsFieldRows(fields) {
+    // The builder sends field/was/now already split, so nothing here cuts a
+    // sentence on " -> ". A resolved value can CONTAIN an arrow.
+    return (fields || []).map((row) => {
+        if (!row || !row.field) {
+            // Not a field diff - a sentence about the comparison itself
+            // ("the previous manifest is unreadable"). Shown as prose,
+            // because that is what it is.
+            return '<tr><td colspan="3" class="dr-note">'
+                 + escapeHtml((row && row.text) || '') + '</td></tr>';
+        }
+        // A field the other side never recorded has no old VALUE to strike
+        // through - striking through "'(absent)'" reads as a value that was
+        // removed, which is a different claim from "we have no record".
+        const first = row.kind === 'first-recorded';
+        const gone = row.kind === 'no-longer-recorded';
+        return '<tr><th>' + escapeHtml(row.field) + '</th>'
+             + (first ? '<td class="dr-absent">not recorded</td>'
+                      : '<td class="dr-was">' + escapeHtml(row.was) + '</td>')
+             + (gone ? '<td class="dr-absent">not recorded</td>'
+                     : '<td class="dr-now">' + escapeHtml(row.now) + '</td>')
+             + '</tr>';
+    }).join('');
+}
+
+function bsRefusalHtml(detail, ran) {
+    const event = (detail && detail.event) || null;
+    const text = (detail && detail.text) || String(detail || '');
+    if (!event || event.refusal !== 'resume_drift') {
+        // NOT A REFUSAL WE UNDERSTAND, and saying so is better than dressing
+        // it up. An older ms-moe-maker emits no structure at all, and a build
+        // can die for reasons that are not this one. Either way the prose is
+        // shown whole - it is the message, not a fallback.
+        return '<pre class="bad">' + escapeHtml(text || '(no output)')
+             + '</pre>';
+    }
+
+    const kept = (event.finished || []).map(escapeHtml).join(', ');
+
+    // SPLIT BY KIND, and this is the difference between surfacing the diff and
+    // dumping it. Resuming into a directory built before a field existed
+    // reports that field as changed - correctly, unknown is not unchanged -
+    // and on a 92-field config that is seventy rows of "the old manifest never
+    // said this" with the ONE knob somebody actually moved in the middle of
+    // them. A table that renders both the same has buried the only line that
+    // mattered inside the wall of text this panel exists to replace.
+    //
+    // The label comes from the builder, off the sentinel its own diff writes.
+    // Nothing here matches on "(absent)".
+    const all = event.fields || [];
+    const moved = all.filter((r) => !r.kind || r.kind === 'moved');
+    const notes = all.filter((r) => r.kind === 'note');
+    const unrecorded = all.filter((r) => r.kind === 'first-recorded'
+                                      || r.kind === 'no-longer-recorded');
+    const rows = bsFieldRows(moved.concat(notes));
+    const lines = all.length
+        ? ''
+        : '<pre class="dr-raw">'
+          + escapeHtml((event.changed || []).join('\n')) + '</pre>';
+    // Folded, not dropped. It is still evidence - an older manifest is a real
+    // reason resume cannot be verified - but it is not news, and it is not
+    // what decides between --force and roots.output.
+    const rest = unrecorded.length
+        ? '<details class="dr-rest"><summary>'
+          + escapeHtml(String(unrecorded.length))
+          + ' more the previous run never recorded</summary>'
+          + '<table class="dr-table"><tbody>'
+          + bsFieldRows(unrecorded) + '</tbody></table></details>'
+        : '';
+
+    const options = (event.options || []).map((opt) => {
+        if (opt.id === 'force') {
+            return '<li><button id="bs-force" class="danger"'
+                 + ' data-name="' + escapeHtml(ran.name) + '"'
+                 + ' data-dryrun="' + (ran.dryrun ? '1' : '0') + '">'
+                 + 'Rebuild everything (--force)</button>'
+                 + '<span class="dr-what">' + escapeHtml(opt.what)
+                 + ' &mdash; this DISCARDS '
+                 + escapeHtml(String((event.finished || []).length))
+                 + ' finished stage(s) and builds them again.</span></li>';
+        }
+        // THE OTHER TWO ARE NOT BUTTONS, and pretending otherwise would be
+        // worse than saying so. `--defaults <the old file>` needs a file this
+        // room has never seen, and "build somewhere else" is an edit to
+        // roots.output in the recipe above. Both are the person's to make.
+        return '<li><code>' + escapeHtml(opt.do) + '</code>'
+             + '<span class="dr-what">' + escapeHtml(opt.what)
+             + '</span></li>';
+    }).join('');
+
+    return '<div class="drift">'
+      + '<div class="dr-head">' + escapeHtml(event.headline || text) + '</div>'
+      + (event.run_dir
+         ? '<div class="dr-where">' + escapeHtml(event.run_dir) + '</div>' : '')
+      + (kept
+         ? '<div class="dr-kept"><b>Already finished, and would be kept '
+           + 'as-is:</b> ' + kept + '</div>' : '')
+      + '<div class="dr-title">What changed</div>'
+      + (rows ? '<table class="dr-table"><thead><tr><th>field</th>'
+                + '<th>was</th><th>now</th></tr></thead><tbody>'
+                + rows + '</tbody></table>'
+              : (lines || (unrecorded.length ? '' : '<div class="dr-note">'
+                 + 'the settings could not be compared field by field</div>')))
+      + rest
+      + '<div class="dr-title">Pick one</div>'
+      + '<ul class="dr-opts">' + options + '</ul>'
+      + (detail.log_tail
+         ? '<details class="dr-log"><summary>what the builder printed</summary>'
+           + '<pre>' + escapeHtml(detail.log_tail) + '</pre></details>' : '')
+      + '</div>';
+}
+
+async function bsRun(name, dryrun, force) {
+    // ONE CALL SITE for the Run button and the force button both. Two of these
+    // is how the second one quietly stops sending a field the first one sends.
+    const out = await bsPost('/api/backstage/run', { name, dryrun, force });
+    // No live channel back. The run is watched through the manifest and the
+    // log exactly like one started by hand in a terminal - a second way to
+    // know what is happening is a second opinion.
+    bsShow(true, 'started pid ' + out.pid + ' in stage ' + out.stage + '\n\n'
+               + out.command_line + '\n\n'
+               + (force ? 'Rebuilding from scratch: the finished stages were '
+                        + 'discarded.\n\n' : '')
+               + 'Watch it on the Stages tab. It survives this viewer '
+               + 'restarting.');
+    load();
+}
+
+function bsRunFailed(err, ran) {
+    // 503 and 404 are about this room, not about the recipe, and they have no
+    // diff to show. Only a conflict can be a refusal.
+    if (err && err.status === 409) {
+        $('bs-out').innerHTML = bsRefusalHtml(err.detail, ran);
+        return;
+    }
+    const d = err && err.detail;
+    const text = (d && typeof d === 'object')
+        ? (d.text || JSON.stringify(d, null, 2))
+        : (d || (err && err.message) || String(err));
+    bsShow(false, text);
 }
 
 document.addEventListener('click', async (e) => {
@@ -2082,6 +2297,23 @@ document.addEventListener('click', async (e) => {
         $('bs-out').innerHTML = '';
         return;
     }
+    if (id === 'bs-force') {
+        // The name comes off the BUTTON, not off the form. The form is
+        // editable and the refusal panel can sit there while somebody types;
+        // forcing a rebuild of whatever is in the name box right now, rather
+        // than of the thing that was actually refused, is exactly the kind of
+        // near-miss that destroys the wrong run directory.
+        const btn = e.target;
+        const ran = { name: btn.getAttribute('data-name'),
+                      dryrun: btn.getAttribute('data-dryrun') === '1' };
+        $('bs-out').innerHTML = '<div class="hint">rebuilding from scratch…</div>';
+        try {
+            await bsRun(ran.name, ran.dryrun, true);
+        } catch (err) {
+            bsRunFailed(err, ran);
+        }
+        return;
+    }
     if (!id || !id.startsWith('bs-')) return;
     const name = $('bs-name').value.trim() || $('bs-list').value;
     const text = $('bs-text').value;
@@ -2101,19 +2333,22 @@ document.addEventListener('click', async (e) => {
             await loadBackstage();
         } else if (id === 'bs-run') {
             if (!name) return bsShow(false, 'save it first, then run it');
-            const out = await bsPost('/api/backstage/run',
-                                     { name, dryrun: $('bs-dryrun').checked });
-            // No live channel back. The run is watched through the manifest
-            // and the log exactly like one started by hand in a terminal -
-            // a second way to know what is happening is a second opinion.
-            bsShow(true, `started pid ${out.pid} in stage ${out.stage}\n\n`
-                       + `${out.command_line}\n\n`
-                       + `Watch it on the Stages tab. It survives this viewer `
-                       + `restarting.`);
-            load();
+            // NEVER force from here. --force lives on the refusal panel and
+            // only there; see the note above bsFieldRows.
+            await bsRun(name, $('bs-dryrun').checked, false);
         }
     } catch (err) {
-        bsShow(false, (err && err.message) || String(err));
+        if (id === 'bs-run') {
+            bsRunFailed(err, { name, dryrun: $('bs-dryrun').checked });
+        } else {
+            // A validate or a save. Their failures are prose either way, but
+            // the body is read now instead of being replaced by the status
+            // line, which is what api() used to do to every one of them.
+            const d = err && err.detail;
+            bsShow(false, (d && typeof d === 'object' ? d.text || JSON.stringify(d)
+                                                     : d)
+                          || (err && err.message) || String(err));
+        }
     }
 });
 
