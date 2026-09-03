@@ -745,3 +745,59 @@ def test_the_room_no_longer_concludes_the_process_was_killed():
         "the viewer is drawing a conclusion no stat() can support")
     assert "renderQuiet" in js and "recent_write" in js, (
         "the viewer is no longer reading the activity evidence at all")
+
+
+# ── overlapping rung globs ──────────────────────────────────────────────────
+
+def test_a_rung_matched_by_two_globs_is_scanned_once(tmp_path):
+    """OVERLAPPING GLOBS ARE THE NORMAL CASE, not a misconfiguration.
+
+    A sensible list - `msmoe_*` for everything, plus `msmoe_run_*` spelled out
+    because that is what the default roots produce - matches msmoe_run_0.5B
+    twice. The log loop above it has always deduped; this one did not, and the
+    asymmetry was the tell.
+
+    Three consequences, none of which announce themselves: scan_rung is the
+    expensive call and ran twice, `earlier` counted a phantom run per
+    duplicate, and the same rung reached harvest twice. On screen it looked
+    like a stage that genuinely had two runs with the same name.
+    """
+    import json
+
+    for rel in ("msmoe_run_0.5B", "gauntlet-runs/0.5B", "gauntlet-runs/1.5B"):
+        d = tmp_path / rel
+        d.mkdir(parents=True)
+        (d / "msmoe-run.json").write_text(json.dumps({
+            "schema_version": 1, "name": rel.split("/")[-1], "build_id": "b",
+            "started": 1700000000.0, "updated": 1.0, "state": "finished",
+            "stages": []}), encoding="utf-8")
+
+    got = sources.scan_stage(
+        "MsMoEMaker", tmp_path, ["*.log"],
+        ["msmoe_*", "gauntlet-runs/*", "msmoe_run_*"], 4096)
+
+    paths = [r["path"] for r in got["rungs"]]
+    assert len(paths) == len(set(paths)), (
+        f"a rung was scanned twice: {paths}. Two globs matching one directory "
+        f"is an ordinary config, not a mistake.")
+    assert got["earlier"] == 2, (
+        f"earlier={got['earlier']} counts a duplicate as a separate run")
+
+
+def test_a_nested_glob_finds_rungs_in_a_subdirectory(tmp_path):
+    """`gauntlet-runs/*` is a legitimate pattern: a recipe pointing its
+    output roots at `gauntlet-runs/{size}` puts every rung one level down, and
+    the stage is still the directory the build runs in."""
+    import json
+
+    for size in ("0.5B", "1.5B"):
+        d = tmp_path / "gauntlet-runs" / size
+        d.mkdir(parents=True)
+        (d / "msmoe-run.json").write_text(json.dumps({
+            "schema_version": 1, "name": size, "build_id": "b",
+            "started": 1700000000.0, "updated": 1.0, "state": "finished",
+            "stages": []}), encoding="utf-8")
+
+    got = sources.scan_stage("MsMoEMaker", tmp_path, ["*.log"],
+                             ["gauntlet-runs/*"], 4096)
+    assert sorted(r["name"] for r in got["rungs"]) == ["0.5B", "1.5B"]

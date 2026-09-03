@@ -1,88 +1,209 @@
-# SerenTheatre - the room where you watch the thing being made.
+# seren-theatre.yaml — SerenTheatre config (the friend-to-friend version)
 #
-# Copy to ~/seren-theatre/seren-theatre.yaml, or point at it with
-#   seren-theatre --config /path/to/seren-theatre.yaml
-# or $SEREN_THEATRE_CONFIG. Env vars beat this file; this file beats defaults.
+# Lives at ~/seren-theatre/seren-theatre.yaml. Same shape and location
+# convention as the rest of the family — learn one service, you know them all.
+# Override with $SEREN_THEATRE_CONFIG, or --config on the command line.
+#
+# Precedence (highest wins): env vars > this file > built-in defaults.
+#
+# EVERYTHING HERE IS OPTIONAL EXCEPT `stages`. A missing key uses the default
+# shown beside it, a bad value is logged and falls back, and a malformed file
+# falls back wholesale rather than taking the service down — watching a run
+# should never be the thing that fails.
 #
 # For a one-off with no file at all:
-#   SEREN_THEATRE_STAGE=/mnt/nvme/fraunkensteinLab python -m seren_theatre
+#   SEREN_THEATRE_STAGE=/mnt/nvme/msMoEMaker python -m seren_theatre
+
+
+# ── The server ───────────────────────────────────────────────────────────────
 
 server:
-  # 127.0.0.1 on purpose, like Margin and unlike Memory. Training logs carry
-  # absolute paths, hostnames and the occasional corpus snippet. Widen it
-  # yourself, deliberately, if you mean to put that on the LAN.
+  # LOOPBACK ON PURPOSE, and worth a moment before you widen it. Training logs
+  # carry absolute paths, hostnames and the occasional corpus snippet, and with
+  # the [stagehand] extra installed this service can START BUILDS and ACCEPT
+  # UPLOADED RECIPES — and a recipe can name an `eval.script`, which the eval
+  # harness runs with the interpreter.
+  #
+  # `GET /` lists the exact write surface, so you never have to guess what a
+  # widened bind is exposing. If you do widen it, put a token in front (below)
+  # or tunnel instead:  ssh -L 7427:localhost:7427 you@thatbox
+  # Default: 127.0.0.1
   host: 127.0.0.1
+
+  # Default: 7427
+  # Family convention: memory 7420, margin 7421, loci 7422, corpus-callosum
+  # 7423, workbench 7425, theatre 7427, probe 7430, observatory 7777.
   port: 7427
 
-# How much of the tail of each log to read per poll. Training logs are
-# megabytes of carriage-returned progress bars and only the end is ever
-# interesting. The dashboard must never be the reason the box is busy.
-tail_bytes: 262144
-refresh_seconds: 5
+  # THE TOKEN, if you widened the bind. Empty means open to anyone who can
+  # reach the port. Three ways to say it, in the order you should prefer them:
+  #
+  #   bearer_token_keyring: seren-theatre/token   # OS keyring, nothing on disk
+  #   bearer_token_env: SEREN_THEATRE_TOKEN       # the systemd/NSSM unit owns it
+  #   bearer_token: "..."                         # inline; it is in this file
+  #
+  # Default: "" (open)
+  bearer_token: ""
 
-# WHICH ms-moe-maker Theatre forks, for `describe`, `validate` and every build.
+
+# ── TLS through the OS trust store ───────────────────────────────────────────
 #
-# Set this if the viewer and the builder live in different venvs, which on a
-# real box they usually do. Without it the answer comes from `ms-moe-maker` on
-# the PATH OF THE SHELL THE SERVICE WAS STARTED FROM - so Backstage can end up
-# describing an old install while your work happens in another, and the only
-# symptom is a craft form that looks slightly out of date.
+# For a box behind a corporate MITM proxy, where the update check would
+# otherwise hang rather than fail. Requires the corp extra:
+#   pip install "seren-theatre[corp]"
 #
+# tls:
+#   trust_system_store: true
+
+
+# ── Update checking ──────────────────────────────────────────────────────────
+#
+# Asks the package index whether a newer seren-theatre exists and reports it on
+# GET /. Purely informational — the service never upgrades itself. It is a CORE
+# dependency rather than an extra for one reason: a stale viewer reporting
+# confidently on a run is exactly the bad time this prevents.
+#
+# updates:
+#   enabled: true                  # Default: true
+#   check_interval_hours: 24       # Default: 24
+#   index_url: ""                  # Default: PyPI
+#   allow_prerelease: false        # Default: false
+
+
+# ── How much of each log to read ─────────────────────────────────────────────
+#
+# Training logs are megabytes of carriage-returned progress bars and only the
+# end is ever interesting. The dashboard must never be the reason the box is
+# busy — that would be an unusually stupid way to perturb a measurement.
+tail_bytes: 262144    # Default: 262144
+refresh_seconds: 5    # Default: 5
+
+
+# ── Which ms-moe-maker Theatre forks ─────────────────────────────────────────
+#
+# ONLY MATTERS WITH THE [stagehand] EXTRA, and then it matters a lot. Theatre
+# runs `ms-moe-maker describe`, `validate` and `build` as CHILD PROCESSES —
+# deliberately, because importing resolves inside whatever interpreter Theatre
+# runs under, and on a real box the viewer and the builder live in different
+# venvs.
+#
+# Unset, the answer comes from `ms-moe-maker` on the PATH OF THE SHELL THE
+# SERVICE WAS STARTED FROM. Start it from a login shell carrying an older
+# install and Backstage describes THAT one while your work happens elsewhere —
+# and the only symptom is a craft form that looks slightly out of date, which
+# is why it goes unnoticed. Symptom to watch for: "upgrade it to see that half
+# of the form."
+#
+# Name one and get it wrong and resolution RAISES rather than falling back to
+# PATH — falling back is precisely the behaviour this setting exists to stop.
 # Whatever is resolved is reported on `GET /` and in the Backstage panel, so
-# you can always read which binary answered instead of deducing it.
-#
-# If you name one and it isn't there, Theatre raises rather than falling back
-# to PATH - falling back is the thing this setting exists to prevent.
+# you can read which binary answered instead of deducing it.
 #
 # pipeline:
-#   venv: /mnt/nvme/msMoEMaker
-#   # command: /usr/local/bin/ms-moe-maker   # or name the script outright
-#
-# Env equivalents, for a systemd unit or an ssh one-liner:
-#   SEREN_THEATRE_VENV=/mnt/nvme/msMoEMaker
-#   SEREN_THEATRE_MSMOE=/usr/local/bin/ms-moe-maker
+#   venv: /mnt/nvme/msMoEMaker              # bin/ms-moe-maker inside it wins
+#   # command: /usr/local/bin/ms-moe-maker  # or name the script outright
 
-# WHAT SURVIVES AFTER YOU DELETE A RUNG.
+
+# ── What survives deleting a rung ────────────────────────────────────────────
 #
-# The problem is not that files get deleted - it is that the thing worth
-# keeping is INSIDE the thing you have to delete. An eval report is ten
-# kilobytes; the rung holding it is forty-five gigabytes. Deleting that rung is
-# the correct, routine thing to do when you need the disk back, and doing it
-# takes the record with it.
+# THE PROBLEM IS NOT THAT FILES GET DELETED. It is that the thing worth keeping
+# is INSIDE the thing you have to delete: an eval report is ten kilobytes and
+# the rung holding it is forty-five gigabytes. Deleting that rung is the
+# correct, routine thing to do when you need the disk back, and doing it used
+# to take the record with it.
 #
-# So the three small documents - manifest, eval report, gate report - are
-# copied into a store Theatre owns, keyed per run, as part of the ordinary
-# scan. Nothing large is copied: the point is that the record stops being
-# attached to the weights.
+# So the three small documents — the run manifest, the eval report and the gate
+# report — are copied into a store Theatre owns as part of the ordinary scan,
+# once a run has finished or failed. Nothing large is copied; the whole point
+# is that the record stops being attached to the weights. They then show up
+# under Previous Surgeries, and two of them can be compared field by field.
 #
-# The store lives OUTSIDE every stage, deliberately, so the cleanup this exists
-# to survive cannot reach it. Only sqlite is implemented; the DSN is here so
-# the engine is a config line rather than a rewrite the day there is a second
-# writer worth having.
+# BOTH PATHS MUST BE OUTSIDE EVERY `stages:` PATH. Theatre refuses at startup
+# otherwise — an archive inside a watched directory would make the viewer a
+# participant in what it is watching, and would be deleted by exactly the
+# cleanup this exists to survive. The defaults already satisfy that.
 #
 # archive:
-#   enabled: true
-#   dsn: ~/seren-theatre/archive.db     # or sqlite:///path/to/archive.db
-#   blobs: ~/seren-theatre/blobs        # content-addressed; never browsed by hand
+#   enabled: true                                  # Default: true
+#   dsn: ~/seren-theatre/archive.db                # Default: this. sqlite:// also accepted
+#   blobs: ~/seren-theatre/blobs                   # Default: this. Content-addressed; never browsed by hand
+
+
+# ── Where Backstage saves recipes ────────────────────────────────────────────
 #
-# Env: SEREN_THEATRE_ARCHIVE, SEREN_THEATRE_ARCHIVE_ENABLED=0
+# OUTSIDE EVERY STAGE, by construction rather than by a check that has to keep
+# being right: a recipe is an INPUT to a build, not an artifact of one.
+#
+# The gotcha this causes, said plainly because everybody hits it once: if your
+# recipes currently live in the directory you are watching, Backstage will not
+# write there and its dropdown will be empty. Copy them across:
+#   mkdir -p ~/seren-theatre/recipes && cp /path/to/stage/*.yaml ~/seren-theatre/recipes/
+#
+# recipes: ~/seren-theatre/recipes    # Default: this
+
+
+# ── The stages ───────────────────────────────────────────────────────────────
+#
+# THE ONE THING WITH NO SENSIBLE DEFAULT, because only you know where you build.
+# A stage is just a directory — nothing needs instrumenting to be watched, and
+# a run with no manifest still renders from what is on disk.
 
 stages:
-  - name: FraunkensteinsLab
-    path: /mnt/nvme/fraunkensteinLab
+  - name: MsMoEMaker
+    # The directory you cd into and run builds from. A recipe's output roots
+    # are relative to it, which is what makes msmoe_run_0.5B a child of this.
+    path: /mnt/nvme/msMoEMaker
+
     # Anything you redirect a run into. Newest first in the viewer.
+    # Stagehand writes its own log and events file here when it launches a
+    # build; a hand-run build only appears if you tee it into this directory.
+    # Default: ["*.log"]
     logs:
       - "*.log"
-    # Per-rung artifact roots. The defaults match the ladder layout:
-    # dryrun_0.5B/, fraunkenstein_agent_1.5B/, fraunkenstein_agent_14B/ ...
+
+    # Per-rung artifact roots. Overlapping patterns are fine — a directory
+    # matched twice is scanned once.
+    #
+    # `msmoe_*` covers the pipeline's OWN defaults (msmoe_run_{size} and
+    # msmoe_dryrun_{size}), which is why it is in the shipped default: without
+    # it, someone who installed both projects and changed nothing saw an empty
+    # stage and no hint as to why.
+    #
+    # It also matches msmoe_data and shard_cache, and that is fine: the glob
+    # PROPOSES and the directory DECIDES. A rung is a directory with a manifest
+    # or rung-shaped artifacts in it; a corpus root is neither, and is dropped.
+    #
+    # A nested pattern works too, for a recipe that puts every rung one level
+    # down:  - "gauntlet-runs/*"
+    #
+    # Default: ["dryrun_*", "msmoe_*", "*_agent_*"]
     rungs:
       - "dryrun_*"
-      # The pipeline's own default output directories: msmoe_run_{size} and
-      # msmoe_dryrun_{size}. Without this a default install of both projects
-      # shows an empty stage and says nothing about why.
       - "msmoe_*"
       - "*_agent_*"
 
-  # A stage is just a directory - nothing needs instrumenting to be watched.
-  # - name: Lyceum
-  #   path: ~/seren-lyceum/runs
+  # As many as you like. A stage that is not on disk says so rather than
+  # vanishing — an empty list and a missing directory are different facts.
+  # - name: FraunkensteinsLab
+  #   path: /mnt/nvme/fraunkensteinLab
+
+
+# ── Environment equivalents ──────────────────────────────────────────────────
+#
+# For a systemd unit or an ssh one-liner, where editing yaml is the wrong shape.
+# These BEAT this file.
+#
+#   SEREN_THEATRE_CONFIG             where this file is
+#   SEREN_THEATRE_HOST               server.host
+#   SEREN_THEATRE_PORT               server.port
+#   SEREN_THEATRE_BEARER_TOKEN       server.bearer_token
+#   SEREN_THEATRE_BEARER_TOKEN_ENV   name of the var holding it
+#   SEREN_THEATRE_BEARER_TOKEN_KEYRING
+#   SEREN_THEATRE_TRUST_SYSTEM_STORE tls.trust_system_store
+#   SEREN_THEATRE_UPDATES_ENABLED    0/false turns the check off
+#   SEREN_THEATRE_STAGE              adds ONE stage; the zero-config path
+#   SEREN_THEATRE_RECIPES            recipes
+#   SEREN_THEATRE_VENV               pipeline.venv
+#   SEREN_THEATRE_MSMOE              pipeline.command
+#   SEREN_THEATRE_ARCHIVE            archive.dsn
+#   SEREN_THEATRE_ARCHIVE_ENABLED    0/false turns harvesting off
