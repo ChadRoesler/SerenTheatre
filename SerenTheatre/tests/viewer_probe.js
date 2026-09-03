@@ -26,21 +26,32 @@ const assert = require('assert');
 const ENT = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 globalThis.escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ENT[c]);
 
-function stubEl() {
+function stubEl(id) {
     return {
-        textContent: '', innerHTML: '', title: '', hidden: false, value: '',
+        id: id || '', textContent: '', innerHTML: '', title: '', hidden: false,
+        value: '', checked: false,
         querySelectorAll: () => [],
         querySelector: () => null,
         getAttribute: () => null,
         setAttribute: () => {},
     };
 }
+// ONE OBJECT PER ID, not a fresh stub per call. The shim used to hand back a
+// new element every time, so anything a handler WROTE was unobservable - which
+// is fine for a pure renderer and useless for testing the panel a click puts
+// on screen. Backstage's whole failure was invisible output; a shim that
+// cannot see output is not the tool for it.
+const ELS = new Map();
+function el(id) {
+    if (!ELS.has(id)) ELS.set(id, stubEl(id));
+    return ELS.get(id);
+}
 // CLICK HANDLERS ARE CAPTURED, not discarded. The old shim threw them away,
 // which is precisely why nobody noticed that the tab buttons had none: every
 // test asked whether a tab EXISTED and none asked whether it did anything.
 const CLICKS = [];
 globalThis.document = {
-    getElementById: stubEl,
+    getElementById: el,
     addEventListener: (kind, fn) => { if (kind === 'click') CLICKS.push(fn); },
     querySelectorAll: () => [],
     hidden: false,
@@ -71,6 +82,7 @@ const EXPORT = `
     structuralSignature, breakablePath, pbValue, collectTicks, retick,
     stagesHtml, logsHtml, fmtDur, knobFor, pbBlock,
     archiveHtml, repHtml, repRecipeHtml, compareHtml,
+    bsRefusalHtml, bsFieldRows, bsPost, bsShow,
     get KEPT(){ return KEPT_PLAYBILLS; }, set KEPT(v){ KEPT_PLAYBILLS = v; },
 };
 `;
@@ -877,4 +889,253 @@ CLICKS.forEach((fn) => { try { fn({ target: notATab }); } catch (e) {} });
 assert.strictEqual(globalThis.SHOWN.length, beforeStray,
     'a click on an ordinary button switched tabs');
 
-console.log('viewer probe OK');
+// ── the build refusal ───────────────────────────────────────────────────────
+//
+// WHAT ACTUALLY HAPPENED, because it is the only justification this section
+// needs. ms-moe-maker declined to resume a run directory built under different
+// settings. It named the two finished stages it would have inherited, listed
+// nine changed fields, and offered three ways out. Backstage put every word of
+// that in the response body. The browser showed:
+//
+//     500 Internal Server Error
+//
+// - because the shell's api() throws `new Error(status + " " + statusText)`
+// and never reads the body. The operator ssh'd into the box and tailed a log
+// to find a message the program had already sent him.
+//
+// Two things are under test here and they fail independently: that a failed
+// write CARRIES its body at all, and that a refusal is rendered as the choice
+// it is rather than as a wall of text with a flag in it.
+
+const REFUSAL = {
+    text: 'the build exited with code 1 within 0.4s of launch',
+    exit_code: 1,
+    command_line: 'ms-moe-maker build gauntlet.yaml --json --dryrun',
+    log_tail: 'REFUSING TO RESUME: this run directory was built by a different build.',
+    event: {
+        event: 'error', stage: 'build', refusal: 'resume_drift',
+        message: 'run directory belongs to a different build_id',
+        headline: 'REFUSING TO RESUME: this run directory was built by a different build.',
+        kept: '2 stage(s) already finished and would be kept as-is: preflight, abliterate.base',
+        run_dir: '/mnt/nvme/gauntlet/msmoe_run_7B',
+        finished: ['preflight', 'abliterate.base'],
+        changed: ["abliterate_n_trials: 60 -> 200", "dryrun: False -> True"],
+        fields: [
+            { field: 'abliterate_n_trials', text: 'abliterate_n_trials: 60 -> 200',
+              kind: 'moved', was: '60', now: '200' },
+            { field: 'dryrun', text: 'dryrun: False -> True',
+              kind: 'moved', was: 'False', now: 'True' },
+            // THE NOISE, and there are seventy of these in a real refusal
+            // against an older run directory. Same list, different news.
+            { field: 'warmup_steps', text: "warmup_steps: '(absent)' -> 60",
+              kind: 'first-recorded', was: "'(absent)'", now: '60' },
+            { field: 'gone_knob', text: "gone_knob: 3 -> '(absent)'",
+              kind: 'no-longer-recorded', was: '3', now: "'(absent)'" },
+        ],
+        options: [
+            { id: 'force', do: '--force', flag: '--force', discards: true,
+              what: 'rebuild everything with the new settings' },
+            { id: 'defaults', do: '--defaults <the old file>', flag: null,
+              discards: false, what: 'reproduce the original build' },
+            { id: 'elsewhere', do: 'build somewhere else', flag: null,
+              discards: false, what: 'change roots.output, keep both' },
+        ],
+    },
+};
+
+const ran = { name: 'gauntlet.yaml', dryrun: false };
+const refused = T.bsRefusalHtml(REFUSAL, ran);
+
+assert.ok(refused.includes('REFUSING TO RESUME'), 'the headline is missing');
+assert.ok(refused.includes('/mnt/nvme/gauntlet/msmoe_run_7B'),
+    'the panel does not say WHICH directory it is refusing to resume into - '
+    + 'the one fact that decides whether the answer is --force or roots.output');
+assert.ok(refused.includes('preflight') && refused.includes('abliterate.base'),
+    'the stages that would be inherited are not named');
+
+// THE DIFF AS A TABLE, from the builder's own split fields. Nothing here cuts
+// a sentence on " -> "; a resolved value can contain an arrow.
+assert.ok(refused.includes('dr-table'), 'the diff rendered as prose');
+assert.ok(refused.includes('>abliterate_n_trials<'), 'a changed field is missing');
+assert.ok(refused.includes('dr-was') && refused.includes('dr-now'),
+    'was and now are not distinguished, so the reader has to work out which '
+    + 'column the build would actually use');
+
+// THE SPLIT, which is the difference between surfacing a diff and dumping one.
+// A resume against a directory built before a field existed reports that field
+// - correctly - and on a 92-field config that is seventy rows of "the previous
+// manifest never said" around the one knob somebody moved. Rendering both the
+// same buries the only line that decides between --force and roots.output.
+const head = refused.slice(0, refused.indexOf('dr-rest'));
+assert.ok(head.includes('abliterate_n_trials'),
+    'a moved knob is not in the panel above the fold');
+assert.ok(!head.includes('warmup_steps'),
+    'a field the previous run never recorded is sitting in the main table '
+    + 'next to a knob that actually moved');
+assert.ok(refused.includes('2 more the previous run never recorded'),
+    'the folded rows are not counted, so nothing says they exist');
+assert.ok(refused.includes('warmup_steps'),
+    'the unrecorded fields were DROPPED rather than folded - they are still '
+    + 'evidence that resume cannot be verified');
+assert.ok(refused.includes('not recorded'),
+    "a field with no previous value rendered as though '(absent)' were one");
+assert.ok(!refused.includes('dr-was">&#39;(absent)&#39;'),
+    'a struck-through "(absent)" claims a value was removed, which is a '
+    + 'different sentence from "we have no record of it"');
+
+// Older builder, no `kind` on the rows at all: everything is a moved field
+// rather than everything vanishing into a fold nobody opens.
+const unlabelled = T.bsRefusalHtml({ text: 'x', event: Object.assign(
+    {}, REFUSAL.event, { fields: [{ field: 'a', text: 'a: 1 -> 2',
+                                    was: '1', now: '2' }] }) }, ran);
+assert.ok(unlabelled.includes('dr-table') && unlabelled.includes('>a<'),
+    'rows from a builder too old to label them disappeared');
+assert.ok(!unlabelled.includes('dr-rest'),
+    'unlabelled rows were folded away as noise');
+
+// THE BUTTON, AND ONLY THE BUTTON WE CAN HONOUR.
+assert.ok(refused.includes('id="bs-force"'),
+    'the refusal names --force and the room still cannot perform it - a dead '
+    + 'end with good manners');
+assert.ok(refused.includes('data-name="gauntlet.yaml"'),
+    'the force button does not carry the recipe that was actually refused, so '
+    + 'it would rebuild whatever is in the name box at the time');
+assert.ok(refused.includes('DISCARDS') && refused.includes('2 finished'),
+    'the destructive button does not say what it destroys');
+assert.ok(refused.includes('class="danger"'), 'the destructive button is not marked');
+assert.ok(refused.includes('<code>--defaults &lt;the old file&gt;</code>'),
+    'an option this room cannot perform was not shown as the instruction it is');
+assert.strictEqual((refused.match(/<button/g) || []).length, 1,
+    'more than one button in a refusal panel - the other two options are a '
+    + 'file this room has never seen and an edit to the recipe above');
+
+// NOT EVERY FAILURE IS A REFUSAL, and dressing one up as the other invents a
+// diff. An older ms-moe-maker emits no structure at all.
+const plain = T.bsRefusalHtml({ text: 'boom', event: null }, ran);
+assert.ok(plain.includes('boom'), 'the prose was dropped along with the structure');
+assert.ok(!plain.includes('bs-force'),
+    'a force button appeared for a failure that was never a resume refusal - '
+    + 'the button must be unreachable without the list of what it destroys');
+assert.ok(!T.bsRefusalHtml({ text: 'boom' }, ran).includes('bs-force'),
+    'a detail with no event at all still offered to discard finished work');
+
+// An entry that is a SENTENCE about the comparison, not a field that moved.
+assert.ok(T.bsFieldRows([{ field: null, text: 'the previous manifest is unreadable' }])
+    .includes('dr-note'),
+    'a sentence about the comparison was forced into a field/was/now row');
+
+// Free text from another program reaches a browser.
+const hostileRefusal = T.bsRefusalHtml({ text: 'x', event: Object.assign(
+    {}, REFUSAL.event, { headline: '<img src=x onerror=alert(1)>',
+                         fields: [{ field: '<b>f</b>', text: 't',
+                                    was: '<i>1</i>', now: '2' }] }) }, ran);
+assert.ok(!hostileRefusal.includes('<img src=x'), 'a headline went to the page raw');
+assert.ok(!hostileRefusal.includes('<i>1</i>'), 'a value went to the page raw');
+
+
+// ── a failed write carries its body ─────────────────────────────────────────
+
+const CALLS = [];
+function fakeFetch(status, payload) {
+    globalThis.fetch = (path, init) => {
+        CALLS.push({ path, init, body: init && init.body
+                                      ? JSON.parse(init.body) : null });
+        return Promise.resolve({
+            ok: status >= 200 && status < 300,
+            status,
+            statusText: status === 409 ? 'Conflict' : 'OK',
+            headers: { get: () => 'application/json' },
+            json: () => Promise.resolve(payload),
+            text: () => Promise.resolve(JSON.stringify(payload)),
+        });
+    };
+}
+
+async function refusalReachesTheCaller() {
+    fakeFetch(409, { detail: REFUSAL });
+    let caught = null;
+    try {
+        await T.bsPost('/api/backstage/run', { name: 'x', dryrun: false });
+    } catch (e) { caught = e; }
+    assert.ok(caught, 'a 409 resolved instead of throwing');
+    assert.strictEqual(caught.status, 409,
+        'the status was lost, so a refusal cannot be told from a crash');
+    assert.ok(caught.detail && caught.detail.event,
+        'THE BUG: the response body was thrown away and only the status line '
+        + 'survived. This is what put "500 Internal Server Error" on screen '
+        + 'while the refusal, the diff and the three ways out sat unread in '
+        + 'the body.');
+    assert.strictEqual(caught.detail.event.refusal, 'resume_drift');
+}
+
+// ── force is reachable only from the refusal, and rebuilds the right thing ──
+
+async function forceRebuildsWhatWasRefused() {
+    // The form says something ELSE by the time the button is clicked - which
+    // is the realistic case, since the panel sits under an editable textarea.
+    el('bs-name').value = 'a-different-recipe.yaml';
+    el('bs-list').value = 'a-different-recipe.yaml';
+
+    CALLS.length = 0;
+    fakeFetch(200, { pid: 41, stage: 'Lab', command_line: 'ms-moe-maker build ...' });
+
+    const button = {
+        id: 'bs-force',
+        getAttribute: (a) => ({ 'data-name': 'gauntlet.yaml',
+                                'data-dryrun': '0' })[a] || null,
+        closest: () => null,
+        classList: { contains: () => false },
+    };
+    for (const fn of CLICKS) { await fn({ target: button }); }
+
+    const run = CALLS.filter((c) => c.path === '/api/backstage/run');
+    assert.strictEqual(run.length, 1, `force posted ${run.length} runs`);
+    assert.strictEqual(run[0].body.name, 'gauntlet.yaml',
+        'force rebuilt whatever was in the name box rather than the recipe '
+        + 'that was actually refused - that destroys the wrong run directory');
+    assert.strictEqual(run[0].body.force, true, 'force did not reach the wire');
+    assert.strictEqual(run[0].body.dryrun, false,
+        'the rebuild changed dryrun out from under the person');
+}
+
+async function theRunButtonNeverForces() {
+    el('bs-name').value = 'gauntlet.yaml';
+    el('bs-dryrun').checked = true;
+    CALLS.length = 0;
+    fakeFetch(200, { pid: 42, stage: 'Lab', command_line: 'ms-moe-maker build ...' });
+
+    const button = {
+        id: 'bs-run', getAttribute: () => null, closest: () => null,
+        classList: { contains: () => false },
+    };
+    for (const fn of CLICKS) { await fn({ target: button }); }
+
+    const run = CALLS.filter((c) => c.path === '/api/backstage/run');
+    assert.strictEqual(run.length, 1, `Run posted ${run.length} runs`);
+    assert.strictEqual(run[0].body.force, false,
+        'the ordinary Run button sent force - a standing way to discard '
+        + 'finished stages is exactly what the refusal panel exists to avoid');
+}
+
+async function aRefusedRunShowsThePanel() {
+    el('bs-name').value = 'gauntlet.yaml';
+    el('bs-out').innerHTML = '';
+    fakeFetch(409, { detail: REFUSAL });
+    const button = {
+        id: 'bs-run', getAttribute: () => null, closest: () => null,
+        classList: { contains: () => false },
+    };
+    for (const fn of CLICKS) { await fn({ target: button }); }
+    const shown = el('bs-out').innerHTML;
+    assert.ok(shown.includes('dr-table') && shown.includes('bs-force'),
+        'a refused run still rendered as a wall of text with no way to act on '
+        + 'it: ' + shown.slice(0, 200));
+}
+
+(async () => {
+    await refusalReachesTheCaller();
+    await forceRebuildsWhatWasRefused();
+    await theRunButtonNeverForces();
+    await aRefusedRunShowsThePanel();
+    console.log('viewer probe OK');
+})().catch((e) => { console.error(e); process.exit(1); });

@@ -145,13 +145,19 @@ def test_the_detached_argv_uses_only_flags_the_builder_has(tmp_path, monkeypatch
 
 @needs_help
 @pytest.mark.parametrize("dryrun", [True, False])
+@pytest.mark.parametrize("force", [True, False])
 def test_every_argv_backstage_can_produce_uses_flags_the_builder_has(
-        tmp_path, monkeypatch, dryrun):
+        tmp_path, monkeypatch, dryrun, force):
     """Through the route, because the route is where the extras are decided.
 
     `--allow-refusals` lived here and was invented in exactly the same way
     `--log-file` was: someone wrote down the flag they wished for. Ticking that
     box did not relax anything, it killed the build.
+
+    `force` is parametrised here for that exact reason. It is the newest thing
+    Backstage can put on the command line, it exists because the builder's
+    resume refusal offers it by name, and offering a button for a flag the
+    builder does not have is the same bug in a friendlier coat.
     """
     pytest.importorskip("ms_moe_maker")
     from fastapi.testclient import TestClient
@@ -180,9 +186,15 @@ def test_every_argv_backstage_can_produce_uses_flags_the_builder_has(
     monkeypatch.setattr(bs.stagehand, "run_detached", fake_detached)
     client = TestClient(create_app(cfg))
     resp = client.post("/api/backstage/run",
-                       json={"name": "r.yaml", "dryrun": dryrun})
+                       json={"name": "r.yaml", "dryrun": dryrun,
+                             "force": force})
     assert resp.status_code == 200, resp.text
     _assert_accepted(seen["argv"][2:], HELP, "POST /api/backstage/run")
+    # Not just "argparse would accept it" - that it is THERE when asked for and
+    # absent when not. A flag silently dropped is a rebuild that does not
+    # rebuild, and the operator finds out from a refusal they thought they had
+    # just answered.
+    assert ("--force" in seen["argv"]) is force, seen["argv"]
 
 
 # ── the guard on the guard ──────────────────────────────────────────────────
