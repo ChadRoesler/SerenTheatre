@@ -83,6 +83,7 @@ const EXPORT = `
     stagesHtml, logsHtml, fmtDur, knobFor, pbBlock,
     archiveHtml, repHtml, repRecipeHtml, compareHtml,
     bsRefusalHtml, bsFieldRows, bsPost, bsShow,
+    bsExportFormHtml, bsExportedHtml, bsExportFailedHtml,
     get KEPT(){ return KEPT_PLAYBILLS; }, set KEPT(v){ KEPT_PLAYBILLS = v; },
 };
 `;
@@ -1132,10 +1133,153 @@ async function aRefusedRunShowsThePanel() {
         + 'it: ' + shown.slice(0, 200));
 }
 
+// ── export: a recipe becomes a prompt book ──────────────────────────────────
+//
+// THE GAP. Backstage could write a recipe and start a build from it; the
+// Repertoire could receive a bundle somebody else made. Nothing here could
+// MAKE one, so the answer to "send me that gauntlet" was still "ssh in and run
+// ms-moe-maker bundle" - from a room that exists so you do not have to.
+
+const form = T.bsExportFormHtml('gauntlet.yaml');
+assert.ok(form.includes('gauntlet.yaml'), 'the form does not say what it will export');
+assert.ok(form.includes('id="bs-notes"'), 'there is nowhere to write the notes');
+assert.ok(form.includes('id="bs-withdata"'), 'the corpora checkbox is missing');
+// THE SENTENCE THAT JUSTIFIES THE SECOND CLICK. A checkbox that can turn a
+// 3 KB download into a 3 GB one has to say so where the checkbox is, not in a
+// README.
+assert.ok(/gigabytes/.test(form),
+    'the corpora checkbox does not say what turning it on can cost');
+assert.ok(!/id="bs-bundle"[^>]*checked/.test(form), 'sanity');
+assert.ok(form.includes('id="bs-bundle"'), 'nothing in the form submits it');
+
+const EXPORTED = {
+    book_id: 'e95fcde1b2dacad012763fec6aec54ff1d58368dbb385fa6cad7df5df8501963',
+    name: 'gauntlet', bytes: 3183, data_experts: [], executes: [],
+    meta_error: '', reused: false, with_data: false, stage: 'Lab',
+    validated: { ok: true, output: '' },
+    output: '  bundle -> /tmp/x.zip\n  [!] 16 fields cannot be written into a '
+          + 'recipe and will follow the OTHER box:\n        seed = 42',
+};
+
+const done = T.bsExportedHtml(EXPORTED);
+assert.ok(done.includes('/api/books/' + EXPORTED.book_id + '/bundle'),
+    'the export panel offers no way to actually get the file');
+assert.ok(done.includes('Repertoire'),
+    'nothing says the book is on the shelf, so it reads as a one-shot download '
+    + 'that a closed tab would lose');
+// THE SIXTEEN FIELDS THAT CANNOT TRAVEL. `bundle` prints them by name every
+// time, and this panel is the only place a Theatre user would ever see them.
+assert.ok(done.includes('cannot be written into a recipe'),
+    "the exporter's own words were dropped - including the one list that says "
+    + 'which knobs will follow the OTHER box');
+assert.ok(done.includes('<details'), 'that list is unfolded and buries the panel');
+
+// A reused row must SAY it is a reused row. `bundle` stamps the time, so an
+// unchanged recipe exported twice is different bytes; the shelf reuses instead
+// of filling with timestamp-twins, and somebody who clicked Export and saw
+// nothing new appear would reasonably think it failed.
+assert.ok(T.bsExportedHtml(Object.assign({}, EXPORTED, { reused: true }))
+    .includes('already had this one'),
+    'a reused book rendered as a fresh export, so the shelf looks like it '
+    + 'ignored the click');
+assert.ok(!done.includes('already had this one'), 'every export claimed to be a reuse');
+
+// EXECUTABLE CONTENT, at the moment it is about to become somebody else's
+// problem on somebody else's machine.
+const risky = T.bsExportedHtml(Object.assign({}, EXPORTED, {
+    executes: ["eval.script = './their_grader.py'"] }));
+assert.ok(risky.includes('This recipe runs code'),
+    'a bundle that runs a script was handed over without a word');
+assert.ok(risky.includes('their_grader.py'), 'the warning did not name the file');
+
+// A bundle that does not validate is still a legitimate thing to keep - but it
+// must never LOOK clean, which is the same rule Save already follows.
+assert.ok(T.bsExportedHtml(Object.assign({}, EXPORTED, {
+    validated: { ok: false, output: 'experts: at least one is required' } }))
+    .includes('does not validate'),
+    'an invalid recipe was bundled and reported as though it were fine');
+
+// Somebody else's text, and the name is free-form.
+assert.ok(!T.bsExportedHtml(Object.assign({}, EXPORTED, {
+    name: '<img src=x onerror=alert(1)>' })).includes('<img src=x'),
+    'a book name went to the page raw');
+
+// THE STAMPER REFUSING ITSELF is not "your recipe is wrong". The exporter
+// loaded its own output back, resolved it, found a field that did not survive
+// the round trip and wrote nothing - rather than hand somebody a bundle that
+// rebuilds to a different model. Rendering that as a user error sends a person
+// hunting their recipe for a bug in a knob table.
+const drift = T.bsExportFailedHtml({ status: 409, detail: {
+    stamper_drift: true, exit_code: 2,
+    text: 'REFUSING TO WRITE: the stamped recipe does not rebuild to the same '
+        + 'fingerprint.\n    lora_r: 16 -> 8' } });
+assert.ok(drift.includes('refused its own output'), 'the drift refusal is unlabelled');
+assert.ok(drift.includes('not in your recipe'),
+    'a bug in the exporter was presented as a bug in the recipe');
+assert.ok(drift.includes('lora_r'),
+    'the fields that moved were dropped - the only actionable thing in it');
+
+const plainFail = T.bsExportFailedHtml({ status: 503, detail: 'no archive' });
+assert.ok(plainFail.includes('no archive') && !plainFail.includes('refused its own'),
+    'an ordinary failure was dressed up as a stamper refusal');
+
+
+// ── and the two clicks reach the wire ───────────────────────────────────────
+
+async function exportIsTwoClicksAndSendsTheForm() {
+    el('bs-name').value = 'gauntlet.yaml';
+    el('bs-out').innerHTML = '';
+    CALLS.length = 0;
+
+    const click = (id) => {
+        const b = { id, getAttribute: () => null, closest: () => null,
+                    classList: { contains: () => false } };
+        return Promise.all(CLICKS.map((fn) => fn({ target: b })));
+    };
+
+    await click('bs-export');
+    assert.ok(el('bs-out').innerHTML.includes('id="bs-bundle"'),
+        'Export did not put the form on screen');
+    assert.strictEqual(CALLS.length, 0,
+        'Export bundled immediately - the corpora checkbox never got a chance '
+        + 'to be read, which is the whole reason it is two clicks');
+
+    // The form is "on screen"; the shim's elements are addressable by id.
+    el('bs-notes').value = '# Handoff';
+    el('bs-withdata').checked = true;
+    fakeFetch(200, Object.assign({}, EXPORTED, { with_data: true }));
+    await click('bs-bundle');
+
+    const posts = CALLS.filter((c) => c.path === '/api/backstage/export');
+    assert.strictEqual(posts.length, 1, `bundled ${posts.length} times`);
+    assert.strictEqual(posts[0].body.name, 'gauntlet.yaml');
+    assert.strictEqual(posts[0].body.notes, '# Handoff',
+        'the notes were not sent - the half a recipe cannot carry, dropped');
+    assert.strictEqual(posts[0].body.with_data, true,
+        'the corpora checkbox did not reach the wire, so ticking it did '
+        + 'nothing and nothing said so');
+    assert.ok(el('bs-out').innerHTML.includes('Download the zip'),
+        'the result panel did not render');
+}
+
+async function aFailedExportShowsWhy() {
+    el('bs-name').value = 'gauntlet.yaml';
+    fakeFetch(409, { detail: { stamper_drift: true, exit_code: 2,
+                               text: 'REFUSING TO WRITE: lora_r: 16 -> 8' } });
+    const b = { id: 'bs-bundle', getAttribute: () => null, closest: () => null,
+                classList: { contains: () => false } };
+    for (const fn of CLICKS) { await fn({ target: b }); }
+    assert.ok(el('bs-out').innerHTML.includes('refused its own output'),
+        'a stamper refusal rendered as a bare status line: '
+        + el('bs-out').innerHTML.slice(0, 160));
+}
+
 (async () => {
     await refusalReachesTheCaller();
     await forceRebuildsWhatWasRefused();
     await theRunButtonNeverForces();
     await aRefusedRunShowsThePanel();
+    await exportIsTwoClicksAndSendsTheForm();
+    await aFailedExportShowsWhy();
     console.log('viewer probe OK');
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -79,6 +79,12 @@ def test_backstage_mounts_exactly_the_expected_write_surface(client):
     paths = {p for p, _ in mutating_routes(client.app)}
     assert paths == {"/api/backstage/recipes", "/api/backstage/validate",
                      "/api/backstage/run",
+                     # Export WRITES: it forks `bundle`, and the zip it makes
+                     # goes onto the shelf. That it is here rather than beside
+                     # the read routes in app.py is the whole promise - a plain
+                     # viewer cannot make a bundle, only receive and pass one
+                     # on, because making one means running the builder.
+                     "/api/backstage/export",
                      # The repertoire. Importing and deleting a prompt book
                      # are writes and belong here; LOOKING at the shelf,
                      # reading a book and downloading the zip are read routes
@@ -449,3 +455,266 @@ def test_force_is_off_unless_asked_for(client, cfg, recipe_on_disk,
     client.post("/api/backstage/run",
                 json={"name": recipe_on_disk, "force": True})
     assert "--force" in seen["extra"], seen["extra"]
+
+
+# ── export: a recipe here becomes a prompt book on the shelf ────────────────
+#
+# THE GAP IT CLOSES. Backstage could write a recipe and start a build from it;
+# the Repertoire could receive a bundle somebody else made and hand it back
+# out. Nothing here could MAKE one - so the answer to "send me that gauntlet"
+# was still "ssh in and run ms-moe-maker bundle", from a room that exists so
+# you do not have to.
+#
+# These run against the REAL builder when it is here, because the whole verb is
+# a fork of it and a mocked fork proves only that we built the string we meant
+# to build - which is exactly the assumption that shipped `--log-file`.
+
+import shutil
+import subprocess
+
+EXAMPLE = None
+for _p in (Path(ms_moe_maker.__file__).resolve().parents[1] / "recipe.example.yaml",
+           Path(ms_moe_maker.__file__).resolve().parent / "assets"
+           / "recipe.example.yaml"):
+    if _p.is_file():
+        EXAMPLE = _p
+        break
+
+needs_bundler = pytest.mark.skipif(
+    EXAMPLE is None or shutil.which("ms-moe-maker") is None,
+    reason="the builder's console script or its example recipe is not here, "
+           "so `bundle` cannot actually be forked - and a mocked fork would "
+           "only prove we built the string we meant to build")
+
+
+@pytest.fixture
+def shelf(tmp_path, cfg):
+    """A cfg with an archive of its own, and a real recipe on the shelf."""
+    cfg.archive.dsn = str(tmp_path / "archive.db")
+    cfg.archive.blobs = str(tmp_path / "blobs")
+    if EXAMPLE is not None:
+        shutil.copy(EXAMPLE, Path(cfg.recipes_dir()) / "gauntlet.yaml")
+    return TestClient(create_app(cfg))
+
+
+@needs_bundler
+def test_export_makes_a_book_and_the_shelf_can_hand_it_back(shelf):
+    """The whole loop, end to end: fork, stamp, store, download.
+
+    Asserted through the READ routes on purpose. Export writing a row that
+    only export can see would be a feature that works in its own test and
+    nowhere else - the point of putting it on the shelf is that everything the
+    shelf already does then applies to it.
+    """
+    r = shelf.post("/api/backstage/export",
+                   json={"name": "gauntlet.yaml", "notes": "# Handoff\n\nk."})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["book_id"] and out["bytes"] > 0
+    assert out["reused"] is False
+    # THE EXPORTER'S OWN WORDS, kept. It prints the sixteen fields that cannot
+    # travel in a recipe, with this box's values, and this is the only place a
+    # person using Theatre would ever see that list.
+    assert "cannot be written into a recipe" in out["output"], out["output"]
+
+    on_shelf = shelf.get("/api/books").json()["books"]
+    assert [b["book_id"] for b in on_shelf] == [out["book_id"]]
+    detail = shelf.get(f"/api/books/{out['book_id']}").json()
+    assert detail["bytes_present"] is True
+    assert detail["notes"].startswith("# Handoff")
+    assert "schema_version" in detail["recipe"]
+
+    zipped = shelf.get(f"/api/books/{out['book_id']}/bundle")
+    assert zipped.status_code == 200
+    assert len(zipped.content) == out["bytes"]
+    assert zipped.content[:2] == b"PK"
+
+
+@needs_bundler
+def test_the_stamped_recipe_leaves_nothing_for_the_far_box_to_decide(shelf):
+    """The whole reason the verb exists, asserted rather than assumed.
+
+    A recipe is mostly sentinels meaning "you decide". If export handed over
+    the raw file, the far box would resolve it against ITS defaults - same
+    file, different model, no error anywhere.
+    """
+    import yaml
+
+    out = shelf.post("/api/backstage/export",
+                     json={"name": "gauntlet.yaml"}).json()
+    recipe = shelf.get(f"/api/books/{out['book_id']}").json()["recipe"]
+    raw_text = (Path(shelf.app.state.cfg.recipes_dir())
+                / "gauntlet.yaml").read_text(encoding="utf-8")
+
+    # NOT len(stamped) > len(raw). The example recipe is mostly COMMENTS, which
+    # the stamp does not carry, so the frozen version is the shorter file while
+    # saying strictly more about the build. Comparing sizes would have been a
+    # test that passed for a reason unrelated to what it is named for.
+    raw, stamped = yaml.safe_load(raw_text) or {}, yaml.safe_load(recipe) or {}
+    filled = [(b, k) for b, section in stamped.items()
+              if isinstance(section, dict)
+              for k in section
+              if not isinstance(raw.get(b), dict) or k not in raw[b]]
+    assert filled, (
+        "not one key was filled in, so the far box is still deciding "
+        "everything this box already decided")
+    assert "# default" in recipe, (
+        "nothing is marked as filled in from this box, so a reader cannot tell "
+        "the knobs somebody CHOSE from the ones that were resolved for them")
+    assert out["book_id"]
+    # The header names the build this resolves to, so a mismatch elsewhere is
+    # a comparison rather than a surprise.
+    assert "build_id" in recipe.splitlines()[6]
+
+
+@needs_bundler
+def test_exporting_twice_does_not_fill_the_shelf_with_timestamp_twins(shelf):
+    """`bundle` stamps the time, so an unchanged recipe exported twice is
+    DIFFERENT BYTES and therefore a different content hash. Identity by hash
+    is still right - it answers "did my friend get the same file" - but it is
+    not the same question as "have I already got this one"."""
+    first = shelf.post("/api/backstage/export",
+                       json={"name": "gauntlet.yaml", "notes": "n"}).json()
+    second = shelf.post("/api/backstage/export",
+                        json={"name": "gauntlet.yaml", "notes": "n"}).json()
+    assert second["book_id"] == first["book_id"]
+    assert second["reused"] is True
+    assert len(shelf.get("/api/books").json()["books"]) == 1
+
+
+@needs_bundler
+def test_different_notes_are_a_different_book(shelf):
+    """The notes are the half a recipe cannot carry. Two bundles that say
+    different things about the same build are two books."""
+    a = shelf.post("/api/backstage/export",
+                   json={"name": "gauntlet.yaml", "notes": "first try"}).json()
+    b = shelf.post("/api/backstage/export",
+                   json={"name": "gauntlet.yaml", "notes": "second try"}).json()
+    assert b["book_id"] != a["book_id"]
+    assert b["reused"] is False
+    assert len(shelf.get("/api/books").json()["books"]) == 2
+
+
+@needs_bundler
+def test_export_writes_nothing_into_a_stage(shelf, tmp_path):
+    """The zip is an artifact of the VIEWER. A viewer that writes into a
+    watched directory has started doing the work."""
+    before = sorted(p.name for p in (tmp_path / "lab").iterdir())
+    shelf.post("/api/backstage/export", json={"name": "gauntlet.yaml"})
+    assert sorted(p.name for p in (tmp_path / "lab").iterdir()) == before
+
+
+def test_the_ceiling_refuses_by_name_and_size(shelf):
+    """A --with-data bundle is the one thing that can put gigabytes in a store
+    designed for small documents. Refusing and saying the size is a fine
+    answer; a full disk on a box nine hours into a build is not.
+
+    Driven through IMPORT rather than export, and that is the better test
+    anyway: both verbs shelve through one function - deliberately, so the
+    zip-slip and symlink refusals cannot exist in one copy and not the other -
+    and import is the path where the bytes arrive from somebody else.
+    """
+    import io
+    import os
+    import zipfile
+
+    from seren_theatre.archive import bundle as tb
+
+    shelf.app.state.cfg.archive.max_bundle_mb = 1
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(tb.RECIPE_NAME, "schema_version: 1\nname: big\n")
+        # Incompressible, so the ceiling is measured against a real file rather
+        # than against a zip bomb's advertised size.
+        zf.writestr("data/x/corpus.jsonl", os.urandom(2 * 1024 * 1024).hex())
+    r = shelf.post("/api/backstage/books", content=buf.getvalue())
+    assert r.status_code == 413, r.text
+    assert "max_bundle_mb" in r.json()["detail"]
+    assert shelf.get("/api/books").json()["books"] == [], (
+        "a bundle over the ceiling was refused AND stored")
+
+
+def test_no_ceiling_means_no_ceiling(cfg):
+    """0 is the escape hatch for somebody who knows what they are doing, and a
+    ceiling of 0 bytes would be the least useful reading of it."""
+    from seren_theatre.config import ArchiveConfig
+
+    assert ArchiveConfig(max_bundle_mb=0).max_bundle_bytes() == 0
+    assert ArchiveConfig(max_bundle_mb=2048).max_bundle_bytes() == 2 * 1024**3
+
+
+def test_export_needs_a_recipe_that_exists(shelf):
+    r = shelf.post("/api/backstage/export", json={"name": "nope.yaml"})
+    assert r.status_code == 404
+
+
+@pytest.mark.parametrize("name", ["../lab/evil", "/etc/passwd", "a/b", ""])
+def test_export_cannot_name_a_path(shelf, name):
+    r = shelf.post("/api/backstage/export", json={"name": name})
+    assert r.status_code in (400, 404, 422)
+
+
+def test_notes_are_a_covering_letter_not_a_chapter(shelf):
+    r = shelf.post("/api/backstage/export",
+                   json={"name": "gauntlet.yaml", "notes": "x" * (300 * 1024)})
+    assert r.status_code == 413
+
+
+def test_export_says_so_when_there_is_no_archive(cfg, tmp_path):
+    """No shelf, no export - and the reason, not a 500. The whole verb is
+    'put it somewhere it survives a closed tab'."""
+    cfg.archive.enabled = False
+    (Path(cfg.recipes_dir()) / "r.yaml").write_text(RECIPE, encoding="utf-8")
+    client = TestClient(create_app(cfg))
+    r = client.post("/api/backstage/export", json={"name": "r.yaml"})
+    assert r.status_code == 503
+    assert "prompt book" in r.json()["detail"]
+
+
+@needs_bundler
+def test_a_failed_bundle_carries_its_body_and_is_not_a_500(shelf, monkeypatch):
+    """Exit 2 is the STAMPER refusing its own output - it loaded the bundle
+    back, resolved it, and found a field that did not survive the round trip.
+    That is the tool working, and it names the fields. A 500 would point at
+    Theatre and send somebody hunting their recipe for a bug in a knob table.
+    """
+    import seren_theatre.backstage as bs
+
+    real = subprocess.run
+
+    def fake(argv, **kw):
+        if "bundle" in argv:
+            return subprocess.CompletedProcess(
+                argv, 2, "",
+                "REFUSING TO WRITE: the stamped recipe does not rebuild to "
+                "the same fingerprint.\n    lora_r: 16 -> 8\n")
+        return real(argv, **kw)
+
+    monkeypatch.setattr(bs.subprocess, "run", fake)
+    r = shelf.post("/api/backstage/export", json={"name": "gauntlet.yaml"})
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["stamper_drift"] is True
+    assert "lora_r" in detail["text"], (
+        "the fields that moved were dropped - which is the only actionable "
+        "thing in the whole message")
+    assert detail["exit_code"] == 2
+
+
+@needs_bundler
+def test_a_bundler_that_says_it_worked_and_writes_nothing_is_reported(
+        shelf, monkeypatch):
+    """The difference between 'the fork failed' and 'the fork lied' is the
+    first half hour of debugging."""
+    import seren_theatre.backstage as bs
+    real = subprocess.run
+
+    def fake(argv, **kw):
+        if "bundle" in argv:
+            return subprocess.CompletedProcess(argv, 0, "  bundle -> ok\n", "")
+        return real(argv, **kw)
+
+    monkeypatch.setattr(bs.subprocess, "run", fake)
+    r = shelf.post("/api/backstage/export", json={"name": "gauntlet.yaml"})
+    assert r.status_code == 500
+    assert "wrote no file" in r.json()["detail"]["text"]

@@ -127,6 +127,17 @@ refresh_seconds: 5    # Default: 5
 #   enabled: true                                  # Default: true
 #   dsn: ~/seren-theatre/archive.db                # Default: this. sqlite:// also accepted
 #   blobs: ~/seren-theatre/blobs                   # Default: this. Content-addressed; never browsed by hand
+#   max_bundle_mb: 2048                            # Default: 2048. 0 = no ceiling
+#
+# max_bundle_mb is the ONE place this store can get big, and it is worth
+# knowing about because everything else in here is deliberately tiny. Harvest
+# copies three small documents per run and nothing else. A PROMPT BOOK is
+# different: `ms-moe-maker bundle --with-data` carries the synth corpora, which
+# is what you want when a recipe generates its own data and is also how a shelf
+# of small documents turns into forty gigabytes. The ceiling is checked when a
+# bundle arrives - exported from Backstage or uploaded by hand - and a refusal
+# that names the size is a much better outcome than a full disk on a box that
+# was nine hours into a build.
 
 
 # ── Where Backstage saves recipes ────────────────────────────────────────────
