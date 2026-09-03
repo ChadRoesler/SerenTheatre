@@ -56,7 +56,7 @@ __all__ = ["ACCENT", "DEFAULT_PORT", "SERVICE", "create_app"]
 # It also stops being a NameError. Removing _describe.py took the definition
 # with it and left the reference on the SERVICE line below, so `import
 # seren_theatre.app` raised and every entry point into this package was dead.
-ACCENT = "#52020b"
+ACCENT = "#6d2823"
 
 try:                                    # meninges is the family's shell
     from seren_meninges.viewer import render_from_dir
