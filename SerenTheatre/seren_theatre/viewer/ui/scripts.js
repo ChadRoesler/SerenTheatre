@@ -1855,8 +1855,20 @@ function repRecipeHtml(d) {
 let BACKSTAGE = null;
 
 async function loadBackstage() {
+    // MOUNTED IS NOT THE SAME AS LOADED, and conflating them is what made this
+    // panel impossible to debug. `backstage: true` from GET / means the ROUTER
+    // exists; everything after can still fail, and the old catch responded by
+    // hiding the tab - which is the same thing it does on a base install where
+    // Backstage genuinely is not there. Two completely different situations,
+    // one indistinguishable outcome, and not a word anywhere.
+    //
+    // So the mounted flag is remembered before anything else can throw, and
+    // the handler at the bottom uses it to decide between "there is no
+    // Backstage here" and "there is one and it did not load, here is why".
+    let mounted = null;
     try {
         const root = await api('/');
+        mounted = !!root.backstage;
         const tab = $('tab-backstage');
         if (!root.backstage) {
             if (tab) tab.hidden = true;
@@ -1948,7 +1960,31 @@ async function loadBackstage() {
             + (boxRows ? `<b>this install</b><ul>${boxRows}</ul>` : '');
     } catch (e) {
         const tab = $('tab-backstage');
-        if (tab) tab.hidden = true;
+        if (mounted === false) {
+            // GET / answered and said there is no Backstage. Hiding is the
+            // right answer and there is nothing to report.
+            if (tab) tab.hidden = true;
+            return;
+        }
+        // Either GET / never answered, or it said Backstage IS mounted and
+        // something after that broke. Both are worth seeing. A hidden tab
+        // here would be the viewer reporting its own failure as an absence.
+        if (tab) tab.hidden = false;
+        const where = mounted === null
+            ? 'The service did not answer <code>GET /</code>, so this panel '
+              + 'could not even ask whether Backstage is mounted.'
+            : 'The service reports Backstage IS mounted, so the router is '
+              + 'there and <code>/api/backstage</code> is what failed.';
+        const help = $('bs-help');
+        if (help) {
+            help.innerHTML = `<b class="warn">Backstage did not load.</b>`
+                + `<br>${where}`
+                + `<br><br><code>${escapeHtml(String(e && e.message || e))}</code>`
+                + `<br><br>This panel is read ONCE, when the page loads — it does`
+                + ` not poll. If the service was restarted under an open tab,`
+                + ` reload the page. Otherwise:`
+                + `<br><code>curl -s localhost:7427/api/backstage</code>`;
+        }
     }
 }
 

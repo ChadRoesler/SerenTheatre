@@ -931,11 +931,29 @@ def scan_stage(name: str, root: Path, log_globs: List[str],
                 if p.is_file() and p not in seen:
                     seen.add(p)
                     logs.append(parse_run_log(p, limit))
+        # DEDUPED, LIKE THE LOGS ABOVE. This loop was not, and the asymmetry
+        # was the tell: somebody wrote the guard for logs and not for rungs.
+        #
+        # OVERLAPPING GLOBS ARE THE NORMAL CASE, not a misconfiguration. A
+        # perfectly sensible list - `msmoe_*` for everything plus `msmoe_run_*`
+        # spelled out because that is what the default roots produce - matches
+        # msmoe_run_0.5B twice, and the rung was then SCANNED twice and
+        # rendered twice.
+        #
+        # Not merely cosmetic, three ways over: scan_rung is the expensive call
+        # (manifest, eval report, gate report, a directory stat), `earlier`
+        # counts one phantom run per duplicate, and harvest is handed the same
+        # rung twice. None of that announces itself - it looks like a stage
+        # that genuinely has two runs with the same name.
+        rung_seen: set[Path] = set()
         for pattern in rung_globs:
             for p in sorted(root.glob(pattern)):
                 # is_dir AND looks_like_rung. The glob proposes; the directory
                 # decides. See looks_like_rung.
+                if p in rung_seen:
+                    continue
                 if p.is_dir() and looks_like_rung(p):
+                    rung_seen.add(p)
                     rungs.append(scan_rung(p))
     logs.sort(key=lambda r: r.mtime, reverse=True)
     # WHAT WAS LAUNCHED FROM HERE, if anything. At STAGE level because that is
