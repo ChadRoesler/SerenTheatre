@@ -345,3 +345,42 @@ def test_a_missing_stage_directory_does_not_crash_the_room(tmp_path):
     r = TestClient(create_app(cfg)).get("/api/state")
     assert r.status_code == 200, "a deleted stage directory took the viewer down"
 
+
+
+def test_the_viewer_is_never_cached(client):
+    """THE UPGRADE THAT CHANGES NOTHING ON SCREEN.
+
+    The entire viewer pack - markup, styles and every renderer - is INLINED
+    into this one document. It shipped with no Cache-Control, no ETag and no
+    Last-Modified, which means a browser applies heuristic caching and may
+    serve a copy from before the last upgrade. `pip install -U` plus a restart
+    then visibly does nothing: the page shows tabs that no longer exist and
+    misses ones that do, and the person watching has no reason to suspect
+    their browser rather than the install they just watched succeed.
+
+    That is the one failure this service must never have. It exists to report
+    what is true NOW, and a stale viewer reports last week's truth while
+    looking exactly like a fresh one.
+    """
+    r = client.get("/viewer")
+    assert r.status_code == 200
+    cache = (r.headers.get("cache-control") or "").lower()
+    assert "no-store" in cache, (
+        f"/viewer sent Cache-Control {cache!r}. With the whole pack inlined, "
+        f"anything cacheable means an upgraded Theatre can keep rendering the "
+        f"old one until somebody thinks to hard-refresh.")
+
+
+def test_every_tab_in_the_pack_reaches_the_rendered_page(client):
+    """The pack is five files the shell assembles, and package-data has to
+    ship all of them. A tab present in tabs.html and absent from the response
+    is a wheel that packaged the markup and not the panel - which works
+    perfectly from a source checkout and fails only for the people who
+    installed it."""
+    import re
+    body = client.get("/viewer").text
+    tabs = set(re.findall(r'data-tab="([a-z]+)"', body))
+    assert tabs == {"stages", "logs", "surgeries", "repertoire", "backstage"}, (
+        f"the rendered page carries tabs {sorted(tabs)}")
+    for fn in ("loadArchive", "loadRepertoire", "compareHtml", "loadBackstage"):
+        assert fn in body, f"{fn} never reached the page"

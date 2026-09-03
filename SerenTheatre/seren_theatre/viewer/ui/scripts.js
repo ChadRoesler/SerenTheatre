@@ -2183,6 +2183,36 @@ document.addEventListener('change', async (e) => {
     }
 });
 
+// -- tab clicks -------------------------------------------------------------
+//
+// THE LEAF WIRES THE CLICKS. The shell owns the TOGGLE - showTab(id) flips the
+// active .tabbar .tab and the .view whose id matches - and it activates the
+// FIRST tab on DOMContentLoaded. It binds nothing else. Every other leaf in
+// the constellation does this itself (Probe: `querySelectorAll('.tab,
+// .tab-link').forEach(...)`); Theatre never did.
+//
+// The result was not a visible error anywhere. The tabbar rendered, the panels
+// rendered, every route answered, and exactly one tab worked - the first one.
+// A person clicking Backstage got nothing, with no way to tell a dead button
+// from an empty panel from a broken service, and the tests all passed because
+// each of them checked a thing that WAS true: the tab exists, the panel
+// exists, the pairing is right, the renderer produces markup.
+//
+// DELEGATED, on document, rather than bound per button on DOMContentLoaded.
+// The tabbar is static today, but a listener attached to elements that existed
+// at one moment is a bug waiting for the first re-render - and delegation has
+// no ordering relationship with DOMContentLoaded at all, which is one less
+// thing that can be true only sometimes.
+document.addEventListener('click', (e) => {
+    const el = e.target;
+    const tab = el && el.closest && el.closest('.tabbar .tab');
+    if (!tab) return;
+    const id = tab.getAttribute('data-tab');
+    // showTab is the shell's. Guarded because a leaf that throws here would
+    // take out every other click handler registered after it.
+    if (id && typeof showTab === 'function') showTab(id);
+});
+
 loadBackstage();
 loadArchive();
 loadRepertoire();

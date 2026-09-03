@@ -35,12 +35,19 @@ function stubEl() {
         setAttribute: () => {},
     };
 }
+// CLICK HANDLERS ARE CAPTURED, not discarded. The old shim threw them away,
+// which is precisely why nobody noticed that the tab buttons had none: every
+// test asked whether a tab EXISTED and none asked whether it did anything.
+const CLICKS = [];
 globalThis.document = {
     getElementById: stubEl,
-    addEventListener: () => {},
+    addEventListener: (kind, fn) => { if (kind === 'click') CLICKS.push(fn); },
     querySelectorAll: () => [],
     hidden: false,
 };
+// The shell's, not ours - stubbed so a click can be observed arriving at it.
+globalThis.SHOWN = [];
+globalThis.showTab = (id) => { globalThis.SHOWN.push(id); };
 // The module-level `load().then(schedule)` and `loadBackstage()` both run at
 // import. Handing them a rejected promise sends each down its own catch, which
 // is a path worth exercising anyway.
@@ -819,5 +826,55 @@ assert.ok(T.compareHtml(diff({ outcome: { a_evaluated: true, b_evaluated: true,
 assert.ok(!T.compareHtml(diff({ a: { run_key: 'x', name: '<img src=x>',
         build_id: '', rung_present: true } })).includes('<img src=x'),
     'a run name went to the compare panel raw');
+
+// ── the tabs are clickable ──────────────────────────────────────────────────
+//
+// THE TEST THAT WOULD HAVE CAUGHT IT, and the reason none of the others did.
+//
+// The shell defines showTab() and activates the FIRST tab on DOMContentLoaded.
+// It binds nothing else - every leaf wires its own clicks, and Theatre's never
+// did. So exactly one tab worked, and nothing anywhere said so: the tabbar
+// rendered, the panels rendered, every route answered 200, and
+// test_every_tab_has_a_panel_and_every_panel_a_tab passed because that pairing
+// really was correct.
+//
+// Four tests, each asking a true question, none asking the only one that
+// mattered: CAN A PERSON GET TO THIS PANEL. So this one clicks.
+
+assert.ok(CLICKS.length, 'the leaf registered no click handlers at all');
+
+function clickTab(id) {
+    const before = globalThis.SHOWN.length;
+    const button = {
+        getAttribute: (a) => (a === 'data-tab' ? id : null),
+        // What a real <button class="tab"> inside .tabbar answers.
+        closest: (sel) => (sel === '.tabbar .tab' ? button : null),
+        classList: { contains: () => false },
+        id: '',
+    };
+    CLICKS.forEach((fn) => { try { fn({ target: button }); } catch (e) { /* other handlers */ } });
+    return globalThis.SHOWN.length > before
+        ? globalThis.SHOWN[globalThis.SHOWN.length - 1] : null;
+}
+
+for (const id of ['logs', 'surgeries', 'repertoire', 'backstage']) {
+    assert.strictEqual(clickTab(id), id,
+        `clicking the ${id} tab did not reach showTab(). The shell only ever `
+        + `activates the FIRST tab; every other one is inert until the leaf `
+        + `binds it, and an inert tab looks exactly like an empty panel.`);
+}
+
+// A click somewhere that is NOT a tab must not move the view out from under
+// somebody - every panel in here has buttons of its own.
+const notATab = {
+    getAttribute: () => null,
+    closest: () => null,
+    classList: { contains: () => false },
+    id: 'bs-save',
+};
+const beforeStray = globalThis.SHOWN.length;
+CLICKS.forEach((fn) => { try { fn({ target: notATab }); } catch (e) {} });
+assert.strictEqual(globalThis.SHOWN.length, beforeStray,
+    'a click on an ordinary button switched tabs');
 
 console.log('viewer probe OK');
