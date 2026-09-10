@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from . import stagehand
+from . import evalreport, sources, stagehand
 from .stageguard import WritesIntoStage, assert_outside_stages
 
 # THE GATE, and it has to be this import rather than this module merely
@@ -107,6 +107,54 @@ class RunBody(BaseModel):
     force: bool = False
 
 
+#: `ms-moe-maker eval --mode`. Asked of the box when it can be asked; this is
+#: the floor for when it cannot, and test_eval_run_contract pins it against
+#: --describe so the two cannot drift apart unnoticed.
+EVAL_MODES = ("routing", "quality", "experts", "all")
+
+#: What `eval` returns, and the reason this endpoint cannot read a status off
+#: the number alone. Verified against ms_moe_maker/cli/eval.py:
+#:
+#:   0  no dead experts, everything measured        -> a result
+#:   1  the recipe would not load                   -> a refusal, before any work
+#:   2  dead expert(s) found                        -> a result, and THE finding
+#:   2  run_eval raised                             -> breakage
+#:   2  "eval could not run" (no model, say)        -> a precondition failure
+#:   2  argparse rejected a flag                    -> breakage
+#:   3  something could not be measured             -> a result
+#:
+#: FOUR MEANINGS ON 2, and one of them is the good news. So "did it measure
+#: anything" is answered by EVIDENCE - a report on disk - and the code only
+#: refines a finding once evidence says there is one. The builder persists
+#: before it prints ("PERSIST BEFORE PRINTING, and the order is the point"),
+#: which is what makes the evidence trustworthy for a run that then crashed in
+#: its own formatting.
+EVAL_RESULT_CODES = {0: "measured", 2: "dead experts", 3: "unmeasurable"}
+EVAL_REFUSAL_EXIT = 1
+
+
+class EvalBody(BaseModel):
+    """Measure a model that has already been built.
+
+    NOT A BUILD WITH A DIFFERENT FLAG, and not chained onto one either. If a
+    recipe wants eval after training it already says so - `eval.mode` runs as a
+    build stage - and Theatre supervising a build-then-eval sequence would be
+    the second opinion about what a build is doing that run_detached's own
+    docstring refuses. What was missing is RE-running eval against a build that
+    already exists, which is the thing people were doing by hand.
+    """
+    name: str
+    # Empty means "whatever the recipe's eval.mode says", which is what the
+    # builder does with no --mode. Theatre does not invent a default the
+    # recipe already has an opinion about.
+    mode: str = ""
+    stage: Optional[str] = None
+    # Which rung to measure. None = the newest evaluable one in the stage,
+    # because that is the answer somebody standing in front of a finished build
+    # wants and it saves a round trip to find its directory name.
+    rung: Optional[str] = None
+
+
 class ExportBody(BaseModel):
     """Make a prompt book out of a recipe on this shelf.
 
@@ -172,6 +220,89 @@ def _stage_for(cfg, name: Optional[str]):
             return stage
     raise HTTPException(404, f"no stage named {name!r}. Configured: "
                              f"{[s.name for s in stages]}")
+
+
+def _eval_modes() -> tuple:
+    """The legal --mode values, asked of the box when it will answer.
+
+    Validated HERE rather than left to the builder's argparse, and that is not
+    belt-and-braces: argparse exits 2 on an unknown flag, and `eval` already
+    uses 2 for "dead expert(s) found". A typo in a mode would come back looking
+    exactly like the finding this whole feature exists to surface.
+    """
+    box = _ask_the_box() or {}
+    modes = box.get("eval_modes")
+    if isinstance(modes, (list, tuple)) and all(isinstance(m, str) for m in modes):
+        return tuple(modes) or EVAL_MODES
+    return EVAL_MODES
+
+
+def _evaluable_rungs(stage) -> List[Dict[str, Any]]:
+    """Every rung in this stage with a trained MoE in it, newest first."""
+    root = stage.resolved()
+    found: List[Dict[str, Any]] = []
+    for pattern in (getattr(stage, "rungs", None) or []):
+        for path in root.glob(pattern):
+            if not path.is_dir() or not sources.looks_like_rung(path):
+                continue
+            verdict = sources.evaluable(path)
+            if not verdict.get("ok"):
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            found.append({"name": path.name, "path": str(path),
+                          "modified": mtime})
+    found.sort(key=lambda r: r["modified"], reverse=True)
+    # A glob can match the same directory twice (`msmoe_*` and `*_agent_*`).
+    seen, unique = set(), []
+    for row in found:
+        if row["path"] in seen:
+            continue
+        seen.add(row["path"])
+        unique.append(row)
+    return unique
+
+
+def _eval_left_a_reading(rung: Path, since: float = 0.0) -> bool:
+    """Did an eval actually measure something in this rung?
+
+    THE DISAMBIGUATOR FOR AN OVERLOADED EXIT CODE. `eval` returns 2 for "dead
+    expert(s) found" - a finished measurement - and also for a crash, a
+    precondition failure and an argparse rejection. The number cannot separate
+    them; a reading on disk can, because the builder persists its report BEFORE
+    it prints one ("PERSIST BEFORE PRINTING, and the order is the point"), so a
+    real measurement survives even a crash in its own formatting.
+
+    `since` IS NOT OPTIONAL IN SPIRIT. A rung that was evaluated last week has
+    a report sitting in it, and a report is only evidence about THIS run if it
+    is newer than the launch. Without the freshness test, last week's success
+    would vouch for today's argparse error - the reassuring direction, which is
+    the worst way for this service to be wrong.
+
+    THE REPORT ONLY, AND NOT THE STREAMING SIDECAR, which is the tempting
+    second source and would be a lie. evalrecord.py reads a per-item sidecar
+    whose format is pinned to a real writer at both ends - and no byte has ever
+    passed between them, because neither side calls its half (see UNWIRED in
+    tests/test_nothing_is_built_and_unwired.py). Calling `find()` here would
+    always return nothing, which would look like handling the streaming case
+    while handling none of it, and would delete an honest exemption to do it.
+    When the harness starts streaming, this is the right place to add it.
+    """
+    newest = 0.0
+    for path in (Path(rung) / evalreport.EVAL_REPORT_NAME,):
+        try:
+            if path.is_file():
+                newest = max(newest, path.stat().st_mtime)
+        except OSError:
+            continue
+    if not newest:
+        return False
+    # A one-second grace: the marker's `started` and the file's mtime come from
+    # different clocks' worth of rounding, and refusing a report written in the
+    # same second as the launch would be a coin flip.
+    return newest >= (float(since) - 1.0)
 
 
 DESCRIBE_TIMEOUT = 20.0
@@ -456,6 +587,109 @@ def router() -> APIRouter:
 
         started["stage"] = stage.name
         return started
+
+    @api.post("/eval")
+    def run_eval(body: EvalBody, request: Request) -> dict:
+        """Measure a build that already exists. Detached, like a build.
+
+        An eval on a real rung is an hour, not a moment - the run that motivated
+        this took 3484 seconds - so it detaches for the same reason a build
+        does: a measurement must not die because the tab that started it closed.
+        """
+        cfg = request.app.state.cfg
+        path = _safe_recipe_path(cfg, body.name)
+        if not path.is_file():
+            raise HTTPException(404, f"no recipe named {body.name!r}")
+
+        modes = _eval_modes()
+        if body.mode and body.mode not in modes:
+            # See _eval_modes: letting this reach argparse would return exit 2,
+            # which is also what "dead expert(s) found" returns.
+            raise HTTPException(
+                422, f"mode {body.mode!r} is not one of {', '.join(modes)}")
+
+        stage = _stage_for(cfg, body.stage)
+        cwd = stage.resolved()
+        if not cwd.is_dir():
+            raise HTTPException(409, f"stage {stage.name!r} is not on disk: {cwd}")
+
+        # WHAT THERE IS TO MEASURE, ASKED OF THE DISK. See sources.evaluable
+        # for why this is not "did a build succeed".
+        rungs = _evaluable_rungs(stage)
+        if body.rung:
+            chosen = next((r for r in rungs if r["name"] == body.rung), None)
+            if chosen is None:
+                target = cwd / body.rung
+                why = (sources.evaluable(target).get("reason")
+                       if target.is_dir() else f"no rung named {body.rung!r}")
+                raise HTTPException(409, f"nothing to evaluate in "
+                                         f"{body.rung!r}: {why}")
+        elif rungs:
+            chosen = rungs[0]
+        else:
+            raise HTTPException(
+                409, f"nothing in stage {stage.name!r} has a trained MoE in it "
+                     f"yet, so there is nothing for eval to measure. Build "
+                     f"first.")
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        tag = path.stem
+        extra: List[str] = []
+        if body.mode:
+            extra.extend(["--mode", body.mode])
+
+        try:
+            # raise_on_early_exit=False: a fast non-zero from `eval` may be the
+            # finding rather than a death. See EVAL_RESULT_CODES.
+            started = stagehand.run_detached(
+                path, cwd=cwd,
+                log_file=cwd / f"msmoe-eval-{tag}-{stamp}.log",
+                events_file=cwd / f"msmoe-eval-{tag}-{stamp}.jsonl",
+                extra=extra, verb=stagehand.EVAL_VERB,
+                raise_on_early_exit=False)
+        except stagehand.StagehandUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, f"could not start the eval: {exc}") from exc
+
+        started["stage"] = stage.name
+        started["rung"] = chosen["name"]
+        started["mode"] = body.mode or "(the recipe's eval.mode)"
+
+        code = started.get("exit_code")
+        if started.get("launch") != stagehand.LAUNCH_FAILED or code is None:
+            # Still running, or gone with 0 inside the settle window. Either way
+            # nothing has gone wrong and the report will arrive the same way a
+            # hand-run eval's does - evalrecord streams it.
+            return started
+
+        # It is already gone with a non-zero code. Which of the four meanings?
+        # EVIDENCE FIRST: a measurement that happened left a report behind,
+        # whatever the code says, because the builder persists before it prints.
+        measured = _eval_left_a_reading(Path(chosen["path"]),
+                                       since=started.get("started") or 0.0)
+        started["measured"] = measured
+        started["finding"] = EVAL_RESULT_CODES.get(code, "") if measured else ""
+        if measured and code in EVAL_RESULT_CODES:
+            # A RESULT, NOT A FAILURE, and reporting it as one would be the
+            # exact disease this package keeps naming: a legitimate answer that
+            # makes the operator's log say ERROR and points at Theatre.
+            return started
+
+        # No reading, so nothing was measured. 1 is the recipe refusing to load
+        # - a conflict with what this box can do, same as a build refusal. Any
+        # other code with no reading is breakage: argparse on a bad flag, a
+        # crash inside run_eval, a precondition that was not met.
+        status = 409 if code == EVAL_REFUSAL_EXIT else 500
+        raise HTTPException(status, {
+            "text": started.get("error") or f"eval exited with code {code}",
+            "exit_code": code,
+            "command_line": started.get("command_line", ""),
+            "log_tail": started.get("log_tail"),
+            "event": started.get("error_event"),
+            "measured": False,
+            "rung": chosen["name"],
+        })
 
     @api.post("/export")
     def export(body: ExportBody, request: Request) -> dict:

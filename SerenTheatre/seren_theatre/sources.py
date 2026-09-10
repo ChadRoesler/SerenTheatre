@@ -577,6 +577,48 @@ def looks_like_rung(root: Path) -> bool:
     return False
 
 
+#: The one _STAGES row that means "a trained MoE is on disk here". Named
+#: rather than indexed so that reordering that table cannot silently change
+#: what Theatre thinks is evaluable.
+FINAL_STAGE = "final"
+
+
+def evaluable(root: Path) -> Dict[str, Any]:
+    """Is there something in this rung for `ms-moe-maker eval` to measure?
+
+    ASK THE DISK, NOT THE HISTORY. The obvious gate for an eval button is "did
+    a build finish successfully", and it is the wrong one three ways: a manifest
+    rotates, so a model sitting right there becomes un-evaluable after a
+    restart; a build that exited non-zero because llama.cpp was missing has a
+    perfectly evaluable MoE and would be refused; and a "successful" build whose
+    output directory was moved would offer a button that only 409s. The
+    question eval itself asks is whether the trained MoE is on disk - its own
+    CLI refuses with "run build first" on exactly that - so this asks the same
+    thing, from the same table the rung scan reads.
+
+    Returns {ok, reason, path}. The reason is for the person, and it is present
+    when ok is False, because a hidden button and a button that explains itself
+    are different kindnesses and only one of them teaches you anything.
+    """
+    marker = next((m for name, _p, m in _STAGES if name == FINAL_STAGE), None)
+    pattern = next((p for name, p, _m in _STAGES if name == FINAL_STAGE), None)
+    if marker is None or pattern is None:
+        # The table changed shape under us. Say so rather than guessing.
+        return {"ok": False, "path": None,
+                "reason": f"no {FINAL_STAGE!r} row in the stage table, so "
+                          f"Theatre cannot tell what a finished MoE looks like"}
+    final = root / pattern
+    try:
+        if (final / marker).is_file():
+            return {"ok": True, "path": str(final), "reason": ""}
+    except OSError as exc:
+        return {"ok": False, "path": str(final),
+                "reason": f"cannot read {final.name}: {exc}"}
+    return {"ok": False, "path": str(final),
+            "reason": f"no trained MoE here yet - eval measures "
+                      f"{pattern}/, and it has no {marker}. Build first."}
+
+
 def scan_rung(root: Path) -> Dict[str, Any]:
     """What EXISTS for one rung. Presence, not promises.
 

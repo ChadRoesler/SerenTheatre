@@ -79,6 +79,13 @@ def test_backstage_mounts_exactly_the_expected_write_surface(client):
     paths = {p for p, _ in mutating_routes(client.app)}
     assert paths == {"/api/backstage/recipes", "/api/backstage/validate",
                      "/api/backstage/run",
+                     # Eval WRITES: it forks `ms-moe-maker eval`, which
+                     # generates real tokens against a built model and
+                     # persists a report into the rung. READING that
+                     # report is a GET in app.py and stays available on a
+                     # plain viewer; producing one means running the
+                     # builder, so it lives behind Backstage.
+                     "/api/backstage/eval",
                      # Export WRITES: it forks `bundle`, and the zip it makes
                      # goes onto the shelf. That it is here rather than beside
                      # the read routes in app.py is the whole promise - a plain
