@@ -24,10 +24,29 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from seren_theatre import backstage, sources, stagehand
-from seren_theatre.app import create_app
-from seren_theatre.config import StageConfig, TheatreConfig
-from seren_theatre.evalreport import EVAL_REPORT_NAME
+# THE GATE, AND THIS FILE HAS TO ASK ABOUT IT BEFORE IMPORTING BACKSTAGE.
+#
+# seren_theatre/backstage.py imports ms_moe_maker at module scope on purpose:
+# stagehand.py ships in the base wheel, so `try: from .backstage import router`
+# in app.py always succeeded and a PLAIN VIEWER mounted the write routes. The
+# builder import is the only thing that actually tells the two install shapes
+# apart, and the import IS the assertion.
+#
+# Which means importing backstage from a test is importing the builder, and on
+# a plain-viewer checkout that is an ImportError that takes the whole
+# COLLECTION down - not one skipped module, the entire run. test_backstage.py
+# has asked this question since it was written; this file was added without it
+# and CI found out first, because the container it was developed in happened to
+# have the builder installed. One install shape tested, two shipped.
+pytest.importorskip(
+    "ms_moe_maker",
+    reason="[stagehand] not installed, so Backstage does not mount and there "
+           "is no eval endpoint to test")
+
+from seren_theatre import backstage, sources, stagehand  # noqa: E402
+from seren_theatre.app import create_app  # noqa: E402
+from seren_theatre.config import StageConfig, TheatreConfig  # noqa: E402
+from seren_theatre.evalreport import EVAL_REPORT_NAME  # noqa: E402
 
 RUNG = "msmoe_run_0.5B"
 FINAL = "fraunkenstein_agent_final"
