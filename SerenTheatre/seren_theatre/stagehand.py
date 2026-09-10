@@ -56,6 +56,17 @@ from typing import List, Optional, Sequence
 # asserts we run exactly this has something to compare against.
 MS_MOE_COMMAND = "ms-moe-maker"
 BUILD_VERB = "build"
+# THE SECOND VERB, AND IT DOES NOT MEAN THE SAME THING BY AN EXIT CODE.
+#
+# `eval` measures a model that has already been built, which is a different
+# kind of run from `build` in exactly one way that matters here: its non-zero
+# exit codes are RESULTS. 2 is "dead expert(s) found", 3 is "something could
+# not be measured" - both of those are the verb working. A build has no such
+# codes; nothing successful has ever come out of it non-zero.
+#
+# So run_detached cannot treat a fast non-zero exit the same way for both, and
+# `raise_on_early_exit` is where that difference lives. See its note below.
+EVAL_VERB = "eval"
 
 
 class StagehandUnavailable(RuntimeError):
@@ -603,7 +614,8 @@ def _last_error_event(path: Optional[Path],
 
 def run_detached(recipe: Path, *, cwd: Path, log_file: Optional[Path] = None,
                  events_file: Optional[Path] = None,
-                 extra: Sequence[str] = ()) -> Dict[str, Any]:
+                 extra: Sequence[str] = (), verb: str = BUILD_VERB,
+                 raise_on_early_exit: bool = True) -> Dict[str, Any]:
     """Start a build that OUTLIVES this process. Returns {pid, argv, ...}.
 
     A build is hours. Theatre restarts - a config change, a service bounce, an
@@ -632,7 +644,7 @@ def run_detached(recipe: Path, *, cwd: Path, log_file: Optional[Path] = None,
     nowhere is one nobody will be able to see afterwards, and discovering that
     silently is the disease this whole function had.
     """
-    argv = list(resolve_command()) + [BUILD_VERB, str(recipe), "--json"]
+    argv = list(resolve_command()) + [verb, str(recipe), "--json"]
     argv.extend(extra)
 
     env = dict(os.environ)
@@ -741,7 +753,20 @@ def run_detached(recipe: Path, *, cwd: Path, log_file: Optional[Path] = None,
         # that a launch was attempted and died, which is a different fact from
         # no launch at all, and it is the fact the old code hid.
         _write_marker(cwd, marker)
-        raise BuildDiedAtLaunch(code, argv, tail, event)
+        # RAISING IS RIGHT FOR A BUILD AND WRONG FOR AN EVAL, and the reason is
+        # not style. A build that is gone within three seconds with a non-zero
+        # code did not start; there is no other reading. `eval` overloads its
+        # codes: 2 means "dead expert(s)" - a finished measurement, and the
+        # whole finding - but ALSO "run_eval raised" and "eval could not run",
+        # and argparse uses 2 for an unknown flag on top of that. Four
+        # meanings, one number, and only one of them is a failure to start.
+        #
+        # An exception cannot carry that ambiguity anywhere useful, so a caller
+        # that knows its verb overloads its codes asks for the FACTS instead
+        # and judges them against evidence on disk. The marker is identical
+        # either way; only the control flow differs.
+        if raise_on_early_exit:
+            raise BuildDiedAtLaunch(code, argv, tail, event)
 
     _write_marker(cwd, marker)
     return dict(marker)
