@@ -132,13 +132,13 @@ function board(shift, over) {
             }],
             current: '/mnt/nvme/fraunkensteinLab/dryrun_0.5B',
             earlier: 0,
-            // ON_STAGE IS THE SERVER'S VERDICT, not a repeat of rungs[0].
+            // ON_STAGE IS THE SERVER'S VERDICT, not a repeat of runs[0].
             // sources._wants_the_stage decides it, so the fixture carries it
             // the way the payload does: the same object when there is something
             // to act on, and null when the run merely finished. Rebuilt below
-            // from `rungs` so the two cannot drift inside this fixture either.
+            // from `runs` so the two cannot drift inside this fixture either.
             finished_here: over.finished_here || 0,
-            rungs: [{
+            runs: [{
                 name: 'dryrun_0.5B',
                 path: '/mnt/nvme/fraunkensteinLab/dryrun_0.5B',
                 mtime: NOW - 30000, specialists: [], skeleton: false,
@@ -221,7 +221,7 @@ function board(shift, over) {
     // finished. Mirrored here rather than hand-written so a fixture change to
     // the run's state carries through to what the stage is told to draw.
     const st = out.stages[0];
-    const run = st.rungs[0];
+    const run = st.runs[0];
     st.on_stage = over.on_stage === undefined
         ? (run.state === 'finished' ? null : run)
         : over.on_stage;
@@ -297,7 +297,7 @@ assert.ok(!T.stagesHtml(board(0)).includes(ROW),
 //
 // THE EMPTY STATE USED TO LIE. It said "No runs here yet" whatever the reason,
 // including over a stage whose builds had all finished and been archived - a
-// harvested run whose directory was reclaimed leaves no rung to count. Telling
+// harvested run whose directory was reclaimed leaves no run to count. Telling
 // somebody nothing was ever built here, with the history one tab away, is this
 // codebase's oldest failure in its newest costume.
 
@@ -307,15 +307,15 @@ assert.ok(running.includes('dryrun_0.5B'),
 assert.ok(!running.includes('Nothing cooking'),
     'a live run rendered the nothing-cooking empty state');
 
-// A clean finish leaves the stage. The payload still carries it - `rungs` is
+// A clean finish leaves the stage. The payload still carries it - `runs` is
 // what harvest reads, and shortening that would stop runs being archived.
 const ended = board(0, { on_stage: null, finished_here: 3 });
 const endedHtml = T.stagesHtml(ended);
 assert.ok(!endedHtml.includes('dryrun_0.5B'),
     'a finished run is still drawn on the stage, so "something is cooking" and '
     + '"this ended cleanly last Tuesday" look the same at a glance');
-assert.ok(ended.stages[0].rungs.length === 1,
-    'the payload dropped the finished run - harvest reads `rungs`, and a '
+assert.ok(ended.stages[0].runs.length === 1,
+    'the payload dropped the finished run - harvest reads `runs`, and a '
     + 'viewer-facing decision must never shorten that list');
 assert.ok(endedHtml.includes('Nothing cooking'),
     'nothing on stage and it does not say so');
@@ -333,7 +333,7 @@ assert.ok(reclaimed.includes('7'),
     'the archived count is not shown, so a stage whose directories were all '
     + 'reclaimed still reads as a stage where nothing ever happened');
 assert.ok(!reclaimed.includes('No runs here yet'),
-    'THE ORIGINAL LIE: four archived builds, zero rungs left on disk, and the '
+    'THE ORIGINAL LIE: four archived builds, zero runs left on disk, and the '
     + 'page says nothing was ever built here');
 T.ARCHIVE = null;
 
@@ -382,21 +382,21 @@ document.querySelectorAll = () => [];
 
 // -- (2) the playbill ---------------------------------------------------------
 
-const rungPath = '/mnt/nvme/fraunkensteinLab/dryrun_0.5B';
-assert.ok(html.includes(`data-playbill="${rungPath} 9c1f2a7b"`),
+const runPath = '/mnt/nvme/fraunkensteinLab/dryrun_0.5B';
+assert.ok(html.includes(`data-playbill="${runPath} 9c1f2a7b"`),
     'the playbill carries no adoption key, so it can never be adopted');
 
-T.KEPT = new Set([`${rungPath} 9c1f2a7b`]);
+T.KEPT = new Set([`${runPath} 9c1f2a7b`]);
 const adopted = T.stagesHtml(a);
 T.KEPT = new Set();
-assert.ok(adopted.includes(`<aside class="playbill" data-playbill="${rungPath} 9c1f2a7b"></aside>`),
+assert.ok(adopted.includes(`<aside class="playbill" data-playbill="${runPath} 9c1f2a7b"></aside>`),
     'a known build_id still rebuilt the whole playbill');
 assert.ok(!adopted.includes('defaults inherited'),
     'the placeholder still carried the panel body');
 
 // A CHANGED build_id must not be adopted - that is the one case where the
 // panel genuinely has to be rebuilt.
-T.KEPT = new Set([`${rungPath} 9c1f2a7b`]);
+T.KEPT = new Set([`${runPath} 9c1f2a7b`]);
 const rebuilt = T.stagesHtml(board(0, { build_id: 'ffffffff' }));
 T.KEPT = new Set();
 assert.ok(rebuilt.includes('defaults inherited'),
@@ -434,7 +434,7 @@ assert.strictEqual(T.pbValue(['python', 'rust']), 'python, rust',
 // -- (4) the artifacts reading reads as english ------------------------------
 
 assert.ok(html.includes('artifacts written'),
-    'the rung-directory reading renders as "artifacts wrote", which is not a '
+    'the run-directory reading renders as "artifacts wrote", which is not a '
     + 'sentence about a directory');
 assert.ok(!html.includes('artifacts wrote'), 'the generic phrasing leaked out');
 
@@ -558,7 +558,7 @@ const GATE = {
 
 function withResults(shift, over) {
     const b = board(shift, over);
-    const r = b.stages[0].rungs[0];
+    const r = b.stages[0].runs[0];
     r.eval = Object.assign({}, EVAL, (over || {}).eval || {});
     r.gate = GATE;
     r.eval_error = (over || {}).eval_error || null;
@@ -668,15 +668,15 @@ assert.ok([...resTicks.keys()].some((k) => k.startsWith('eval-age:')),
 // THE ASSERTION THAT MATTERS is the one about `archived only`. Stages shows
 // what is on disk; this shows what was RECORDED, and most of what was recorded
 // no longer exists - that is the whole reason the archive is worth having. A
-// row that renders identically to a live rung would have the viewer assert a
+// row that renders identically to a live run would have the viewer assert a
 // directory exists when it does not, which is this codebase's oldest failure
 // wearing its newest costume.
 
 const SURGERY = {
     run_key: 'abc123', build_id: 'cafe0001', stage: 'Lab',
-    name: 'dryrun_0.5B', rung_path: '/mnt/nvme/fraunkensteinLab/dryrun_0.5B',
+    name: 'dryrun_0.5B', run_path: '/mnt/nvme/fraunkensteinLab/dryrun_0.5B',
     started: NOW - 90000, finished: NOW - 86400, state: 'finished', ok: 1,
-    rung_present: false,
+    run_present: false,
     manifest: { build_id: 'cafe0001', name: 'dryrun_0.5B' },
     gate: { status: 'ok', findings: 0, unmeasured: 1,
             view: { status: 'ok', findings: [],
@@ -708,7 +708,7 @@ function archiveState(over) {
 const arc = T.archiveHtml(archiveState());
 assert.ok(arc.includes('archived only'),
     'a run whose directory has been deleted rendered without saying so - the '
-    + 'viewer is now asserting that a rung exists when a stat disagrees');
+    + 'viewer is now asserting that a run exists when a stat disagrees');
 assert.ok(arc.includes('dryrun_0.5B'), 'the surgery did not render');
 assert.ok(arc.includes('cafe0001'), 'the build_id is missing');
 
@@ -720,7 +720,7 @@ assert.ok(arc.includes('cafe0001'), 'the build_id is missing');
 // as its own thing, and it has to NOT read as a failure.
 const arcGone = T.archiveHtml(archiveState({
     surgeries: [Object.assign({}, SURGERY,
-        { rung_state: 'gone', rung_present: false })] }));
+        { run_state: 'gone', run_present: false })] }));
 assert.ok(arcGone.includes('archived only'),
     'a directory that was looked for and is not there must still say so');
 assert.ok(!arcGone.includes('not reachable'),
@@ -729,12 +729,12 @@ assert.ok(!arcGone.includes('not reachable'),
 
 const arcUnknown = T.archiveHtml(archiveState({
     surgeries: [Object.assign({}, SURGERY,
-        { rung_state: 'unknown', rung_present: false })] }));
+        { run_state: 'unknown', run_present: false })] }));
 assert.ok(arcUnknown.includes('not reachable'),
     'an unreachable directory has no rendering of its own, so the viewer is '
     + 'back to reporting a mount outage as a deletion');
 assert.ok(!arcUnknown.includes('archived only'),
-    'an unreachable rung was drawn as deleted - this is the exact false alarm '
+    'an unreachable run was drawn as deleted - this is the exact false alarm '
     + 'the third state exists to stop');
 assert.ok(!/badge failed[^>]*>\s*not reachable/.test(arcUnknown),
     'the unknown state got a failure badge. Nothing is wrong when Theatre '
@@ -742,15 +742,15 @@ assert.ok(!/badge failed[^>]*>\s*not reachable/.test(arcUnknown),
 
 const arcHere = T.archiveHtml(archiveState({
     surgeries: [Object.assign({}, SURGERY,
-        { rung_state: 'present', rung_present: true })] }));
-assert.ok(arcHere.includes('on disk'), 'a present rung did not say so');
+        { run_state: 'present', run_present: true })] }));
+assert.ok(arcHere.includes('on disk'), 'a present run did not say so');
 assert.ok(!arcHere.includes('archived only') && !arcHere.includes('not reachable'),
-    'a rung that is on disk was also labelled missing');
+    'a run that is on disk was also labelled missing');
 
 // A boolean-only payload (reconcile skipped) reads at the OLD meaning.
 const arcLegacy = T.archiveHtml(archiveState({
     surgeries: [Object.assign({}, SURGERY,
-        { rung_state: '', rung_present: false })] }));
+        { run_state: '', run_present: false })] }));
 assert.ok(arcLegacy.includes('archived only'),
     'a pre-column row was re-interpreted as unknown; the old boolean said '
     + 'gone and the viewer must not invent doubt the server never expressed');
@@ -758,7 +758,7 @@ assert.ok(arcLegacy.includes('archived only'),
 // ── where it lives on the builder, when that differs ───────────────────────
 const arcRemote = T.archiveHtml(archiveState({
     surgeries: [Object.assign({}, SURGERY,
-        { rung_path: '/mnt/spark/msMoEMaker/runs/x',
+        { run_path: '/mnt/spark/msMoEMaker/runs/x',
           builder_path: '/mnt/nvme/msMoEMaker/runs/x' })] }));
 assert.ok(arcRemote.includes('on the builder'),
     'the builder-side path was recorded and never shown - the path Theatre '
@@ -778,7 +778,7 @@ assert.ok(!builderLine.includes('spark'),
 
 const arcLocal = T.archiveHtml(archiveState({
     surgeries: [Object.assign({}, SURGERY,
-        { rung_path: '/x/runs/y', builder_path: '/x/runs/y' })] }));
+        { run_path: '/x/runs/y', builder_path: '/x/runs/y' })] }));
 assert.ok(!arcLocal.includes('on the builder'),
     'a local stage printed the same path twice');
 
@@ -819,7 +819,7 @@ assert.ok(absent.includes('no recipe kept'),
     'a run with no preserved recipe says nothing, so "incomplete record" is '
     + 'indistinguishable from "complete record"');
 // ANCHORED TO THE RECIPE ELEMENT, not to the string `badge failed` anywhere on
-// the card. The fixture run has `rung_present: false`, so the card ALREADY
+// the card. The fixture run has `run_present: false`, so the card ALREADY
 // carries a failed badge reading "archived only" - a bare substring check
 // passed on that and said nothing about the recipe at all. Two drafts of this
 // assertion were too broad before this one; a test that matches the wrong
@@ -853,9 +853,9 @@ assert.ok(arc.includes('res-unmeasured'),
     + 'could not run reads as one that came back clean');
 
 const onDisk = T.archiveHtml(archiveState({
-    surgeries: [Object.assign({}, SURGERY, { rung_present: true })] }));
+    surgeries: [Object.assign({}, SURGERY, { run_present: true })] }));
 assert.ok(onDisk.includes('on disk') && !onDisk.includes('archived only'),
-    'a surgery whose rung is still there was marked as deleted');
+    'a surgery whose run is still there was marked as deleted');
 
 // THREE VERDICTS. `ok: null` is a manifest that never said, and rendering it
 // as a failure would invent a result.
@@ -967,9 +967,9 @@ assert.ok(T.repRecipeHtml({ recipe: '<script>alert(3)</script>',
 function diff(over) {
     const base = {
         a: { run_key: 'a1', name: 'dryrun_a', build_id: 'aaa1', started: NOW - 9000,
-             rung_present: true },
+             run_present: true },
         b: { run_key: 'b2', name: 'dryrun_b', build_id: 'bbb2', started: NOW - 3000,
-             rung_present: false },
+             run_present: false },
         config: { inputs: [], consequences: [], only_in_a: [], only_in_b: [],
                   unchanged: 74, has_glossary: true },
         attribution: 'none', incomparable_because: [], nondeterminism: false,
@@ -1069,7 +1069,7 @@ assert.ok(T.compareHtml(diff({ outcome: { a_evaluated: true, b_evaluated: true,
     'a delta between two starved experts was printed as a result');
 
 assert.ok(!T.compareHtml(diff({ a: { run_key: 'x', name: '<img src=x>',
-        build_id: '', rung_present: true } })).includes('<img src=x'),
+        build_id: '', run_present: true } })).includes('<img src=x'),
     'a run name went to the compare panel raw');
 
 // ── the tabs are clickable ──────────────────────────────────────────────────
@@ -1550,7 +1550,7 @@ const SAID = {
 
 // Linked: Theatre found the directory, so it says where, plainly.
 const linked = withRun(SAID,
-    { rung_path: '/mnt/spark/msMoEMaker/runs/msmoe_run_0.5B' });
+    { run_path: '/mnt/spark/msMoEMaker/runs/msmoe_run_0.5B' });
 assert.ok(linked.includes('writing into'),
     'the build named its run directory and the panel does not say which one - '
     + 'this is the field that links the process to the thing on disk');
@@ -1563,14 +1563,14 @@ assert.ok(linked.includes('the builder calls it'),
 
 // Local stage: both paths identical, so saying it twice is noise.
 const same = withRun(Object.assign({}, SAID, { run_dir: '/local/runs/x' }),
-    { rung_path: '/local/runs/x' });
+    { run_path: '/local/runs/x' });
 assert.ok(same.includes('writing into'), 'a local run still says where');
 assert.ok(!same.includes('the builder calls it'),
     'a local stage printed the same path twice');
 
 // Unlinked: the build named a directory Theatre cannot see. Said, not hidden,
-// and not force-matched onto whatever rung happens to be there.
-const unlinked = withRun(SAID, { rung_path: null });
+// and not force-matched onto whatever run happens to be there.
+const unlinked = withRun(SAID, { run_path: null });
 assert.ok(unlinked.includes('no directory of that name is visible here'),
     'a build on another box with no remote_prefix reported nothing at all - '
     + 'the operator cannot fix a mapping they are not told is missing');
@@ -1591,7 +1591,7 @@ assert.ok(linked.includes('gauntlet') && linked.includes('2 experts'),
 // NO SECOND OPINION. A started event claiming a status must not paint one.
 const lying = withRun(Object.assign({}, SAID,
     { state: 'finished', status: 'exploded' }),
-    { rung_path: '/mnt/spark/msMoEMaker/runs/msmoe_run_0.5B' });
+    { run_path: '/mnt/spark/msMoEMaker/runs/msmoe_run_0.5B' });
 assert.ok(!lying.includes('exploded'),
     'the started event was allowed to paint a status. The manifest owns run '
     + 'state; two opinions is how a dashboard disagrees with itself');

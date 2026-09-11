@@ -177,9 +177,11 @@ class TestTheWalkStaysBounded:
         hands back children, and it is the only shape that exercises the line.
         """
         stage = tmp_path / "msMoEMaker"
-        run = run(stage / "gauntlet-runs" / "0.5B", manifest=False)
+        # `made`, not `run` - the factory is called `run()` since the rename and
+        # a local of the same name shadows it for the whole method body.
+        made = run(stage / "gauntlet-runs" / "0.5B", manifest=False)
         # A directory INSIDE the run that would itself pass the predicate.
-        run(run / "moe_untrained_backup")
+        run(made / "moe_untrained_backup")
 
         seen: list[str] = []
         real = os.scandir
@@ -193,16 +195,16 @@ class TestTheWalkStaysBounded:
 
         assert [p.relative_to(stage).as_posix() for p in found] == \
             ["gauntlet-runs/0.5B"], "nested directory reported as a run"
-        assert not any(str(run) in s and s != str(run) for s in seen), (
+        assert not any(str(made) in s and s != str(made) for s in seen), (
             f"discovery read inside the run: "
-            f"{[s for s in seen if str(run) in s and s != str(run)]}")
+            f"{[s for s in seen if str(made) in s and s != str(made)]}")
 
     def test_a_manifest_answers_without_reading_the_directory(self, tmp_path):
         """One stat, not an enumeration. This is what keeps the common case -
         an instrumented run - cheap no matter how many files it holds."""
-        run = run(tmp_path / "r")
+        made = run(tmp_path / "r")          # local renamed; see the note above
         for i in range(50):
-            (run / f"junk{i}.bin").write_text("x", encoding="utf-8")
+            (made / f"junk{i}.bin").write_text("x", encoding="utf-8")
 
         calls: list[str] = []
         real = os.scandir
@@ -217,7 +219,7 @@ class TestTheWalkStaysBounded:
         original = S_os.scandir
         try:
             S_os.scandir = spy
-            assert sources.looks_like_run(run) is True
+            assert sources.looks_like_run(made) is True
         finally:
             S_os.scandir = original
         assert calls == [], "manifest found and the directory read anyway"
