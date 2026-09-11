@@ -28,6 +28,13 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="seren_theatre\archive\blobs.py" />
+    <Compile Include="seren_theatre\archive\bundle.py" />
+    <Compile Include="seren_theatre\archive\compare.py" />
+    <Compile Include="seren_theatre\archive\harvest.py" />
+    <Compile Include="seren_theatre\archive\store.py" />
+    <Compile Include="seren_theatre\archive\__init__.py" />
+    <Compile Include="seren_theatre\evalreport.py" />
     <Compile Include="seren_theatre\__init__.py" />
     <Compile Include="seren_theatre\__main__.py" />
     <Compile Include="seren_theatre\_diag.py" />
@@ -39,6 +46,30 @@
     <Compile Include="seren_theatre\sources.py" />
     <Compile Include="seren_theatre\stageguard.py" />
     <Compile Include="seren_theatre\stagehand.py" />
+    <Compile Include="tests\conftest.py" />
+    <Compile Include="tests\test_archive.py" />
+    <Compile Include="tests\test_archive_durability.py" />
+    <Compile Include="tests\test_artifact_names.py" />
+    <Compile Include="tests\test_bundle_contract.py" />
+    <Compile Include="tests\test_cli_contract.py" />
+    <Compile Include="tests\test_compare.py" />
+    <Compile Include="tests\test_eval_run.py" />
+    <Compile Include="tests\test_nothing_is_built_and_unwired.py" />
+    <Compile Include="tests\test_pipeline_command.py" />
+    <Compile Include="tests\test_presence_is_three_valued.py" />
+    <Compile Include="tests\test_readings.py" />
+    <Compile Include="tests\test_recipe_in_the_archive.py" />
+    <Compile Include="tests\test_remote_launch.py" />
+    <Compile Include="tests\test_repertoire.py" />
+    <Compile Include="tests\test_results.py" />
+    <Compile Include="tests\test_results_contract.py" />
+    <Compile Include="tests\test_results_end_to_end.py" />
+    <Compile Include="tests\test_rung_discovery.py" />
+    <Compile Include="tests\test_sample_config.py" />
+    <Compile Include="tests\test_stage_contract.py" />
+    <Compile Include="tests\test_sweep.py" />
+    <Compile Include="tests\test_the_build_says_where_it_is.py" />
+    <Compile Include="tests\test_the_stage_holds_one_run.py" />
     <Compile Include="tests\_writerfinder.py" />
     <Compile Include="tests\test_app.py" />
     <Compile Include="tests\test_backstage.py" />
@@ -51,6 +82,7 @@
   </ItemGroup>
   <ItemGroup>
     <Folder Include="seren_theatre\" />
+    <Folder Include="seren_theatre\archive\" />
     <Folder Include="seren_theatre\viewer\" />
     <Folder Include="seren_theatre\viewer\ui\" />
     <Folder Include="tests\" />

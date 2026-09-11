@@ -222,8 +222,30 @@ def literal(node: ast.AST, env: Optional[dict] = None):
             return None
         return tuple(items)
 
+    # 4. DICTS, INCLUDING ONES KEYED BY NAME. `ARTIFACTS = {STITCH: "moe_untrained"}`
+    #    is a Dict whose keys are Names, so literal_eval raises twice over and
+    #    the constant reads as None. That is the fail-open shape this module was
+    #    written about: an assertion comparing our artifact map against None
+    #    either cries wolf or, if it is written defensively with `or {}`, passes
+    #    while comparing nothing. Same all-or-nothing rule as tuples.
+    if isinstance(node, ast.Dict):
+        if any(k is None for k in node.keys):  # {**spread} has a None key
+            return None
+        keys = [literal(k, env) for k in node.keys]
+        values = [literal(v, env) for v in node.values]
+        if any(k is None for k in keys) or any(v is None for v in values):
+            return None
+        return dict(zip(keys, values))
+
     if isinstance(node, ast.BinOp):
         left, right = literal(node.left, env), literal(node.right, env)
+        # 5. STRINGS BUILT FROM A NAME. `EXPORT_TEMPLATE = "{" + PARAM + "}"` is
+        #    written that way precisely so the placeholder and the parameter
+        #    cannot disagree - and reading it as None is how a contract test
+        #    stops noticing that they have.
+        if isinstance(left, str) and isinstance(right, str) and \
+                isinstance(node.op, ast.Add):
+            return left + right
         if isinstance(left, (int, float)) and isinstance(right, (int, float)):
             op = type(node.op)
             if op is ast.Mult:
@@ -246,6 +268,18 @@ def constants(path: Path) -> Dict[str, object]:
     out: Dict[str, object] = {}
     tree = ast.parse(Path(path).read_text(encoding="utf-8"))
     for node in tree.body:
+        # ANNOTATED ASSIGNMENTS COUNT. `ARTIFACTS: Dict[str, str] = {...}` is an
+        # AnnAssign, not an Assign, so a reader that only walked Assign nodes
+        # could not see it at all - and a typed constant is if anything MORE
+        # likely to be the published vocabulary a contract cares about. The
+        # value is optional (`x: int` declares without assigning), hence the
+        # guard rather than an attribute access.
+        if isinstance(node, ast.AnnAssign):
+            if node.value is not None and isinstance(node.target, ast.Name):
+                value = literal(node.value, out)
+                if value is not None:
+                    out[node.target.id] = value
+            continue
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:

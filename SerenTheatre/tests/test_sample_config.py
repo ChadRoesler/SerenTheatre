@@ -58,7 +58,7 @@ def _keys_the_loader_reads(source: str):
     Nine, out of twenty-two. `data` is the local name inside `load_config`
     alone; every nested section - ArchiveConfig, PipelineConfig, UpdatesConfig,
     StageConfig - reads its own keys off a local called `d`, and the guard
-    could not see one of them. So `blobs`, `dsn`, `command`, `venv`, `rungs`,
+    could not see one of them. So `blobs`, `dsn`, `command`, `venv`, `runs`,
     `logs`, `index_url` and the rest could go undocumented and this test, whose
     entire name is that they cannot, stayed green.
 
@@ -123,17 +123,17 @@ def test_loading_the_sample_gives_the_shipped_defaults(loaded):
     assert loaded.archive.enabled is default.archive.enabled
     assert loaded.archive.resolved_dsn() == default.archive.resolved_dsn()
     assert loaded.archive.blobs_dir() == default.archive.blobs_dir()
-    assert (loaded.pipeline.venv, loaded.pipeline.command) == ("", ""), (
+    assert (loaded.pipeline.venv, loaded.pipeline.command) == ("", []), (
         "pipeline must ship UNSET - a sample that names somebody else's venv "
         "raises on every box but the one it was written on")
 
 
-def test_the_samples_rung_globs_are_the_shipped_defaults(loaded):
+def test_the_samples_run_globs_are_the_shipped_defaults(loaded):
     """Because the sample spells them out, and a spelled-out list OVERRIDES
     the default rather than extending it. If the two drift, everyone who
     copied the sample silently stops matching directories the default would
     have found."""
-    assert loaded.stages[0].rungs == StageConfig(name="x", path="/x").rungs
+    assert loaded.stages[0].runs == StageConfig(name="x", path="/x").runs
 
 
 def test_the_sample_documents_the_archive_containment_rule(text):

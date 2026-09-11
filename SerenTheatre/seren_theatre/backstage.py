@@ -149,10 +149,10 @@ class EvalBody(BaseModel):
     # recipe already has an opinion about.
     mode: str = ""
     stage: Optional[str] = None
-    # Which rung to measure. None = the newest evaluable one in the stage,
+    # Which run to measure. None = the newest evaluable one in the stage,
     # because that is the answer somebody standing in front of a finished build
     # wants and it saves a round trip to find its directory name.
-    rung: Optional[str] = None
+    run: Optional[str] = None
 
 
 class ExportBody(BaseModel):
@@ -237,36 +237,34 @@ def _eval_modes() -> tuple:
     return EVAL_MODES
 
 
-def _evaluable_rungs(stage) -> List[Dict[str, Any]]:
-    """Every rung in this stage with a trained MoE in it, newest first."""
+def _evaluable_runs(stage) -> List[Dict[str, Any]]:
+    """Every run in this stage with a trained MoE in it, newest first."""
     root = stage.resolved()
     found: List[Dict[str, Any]] = []
-    for pattern in (getattr(stage, "rungs", None) or []):
-        for path in root.glob(pattern):
-            if not path.is_dir() or not sources.looks_like_rung(path):
-                continue
-            verdict = sources.evaluable(path)
-            if not verdict.get("ok"):
-                continue
-            try:
-                mtime = path.stat().st_mtime
-            except OSError:
-                mtime = 0.0
-            found.append({"name": path.name, "path": str(path),
-                          "modified": mtime})
-    found.sort(key=lambda r: r["modified"], reverse=True)
-    # A glob can match the same directory twice (`msmoe_*` and `*_agent_*`).
-    seen, unique = set(), []
-    for row in found:
-        if row["path"] in seen:
+    # THE SAME ANSWER THE CARDS ARE DRAWN FROM. This used to walk the `runs`
+    # globs itself, which was two implementations of "which directories are
+    # runs" - and the moment the globs stopped being the answer, this one would
+    # have kept quietly refusing to measure models the rest of the viewer was
+    # happily displaying. resolve_runs is the single answer; it dedupes, and
+    # it falls back to discovery when no globs are configured.
+    for path in sources.resolve_runs(
+            root, getattr(stage, "runs", None) or (),
+            max_depth=getattr(stage, "run_depth", sources.RUN_DEPTH_DEFAULT)):
+        verdict = sources.evaluable(path)
+        if not verdict.get("ok"):
             continue
-        seen.add(row["path"])
-        unique.append(row)
-    return unique
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        found.append({"name": path.name, "path": str(path),
+                      "modified": mtime})
+    found.sort(key=lambda r: r["modified"], reverse=True)
+    return found
 
 
-def _eval_left_a_reading(rung: Path, since: float = 0.0) -> bool:
-    """Did an eval actually measure something in this rung?
+def _eval_left_a_reading(run: Path, since: float = 0.0) -> bool:
+    """Did an eval actually measure something in this run?
 
     THE DISAMBIGUATOR FOR AN OVERLOADED EXIT CODE. `eval` returns 2 for "dead
     expert(s) found" - a finished measurement - and also for a crash, a
@@ -275,7 +273,7 @@ def _eval_left_a_reading(rung: Path, since: float = 0.0) -> bool:
     it prints one ("PERSIST BEFORE PRINTING, and the order is the point"), so a
     real measurement survives even a crash in its own formatting.
 
-    `since` IS NOT OPTIONAL IN SPIRIT. A rung that was evaluated last week has
+    `since` IS NOT OPTIONAL IN SPIRIT. A run that was evaluated last week has
     a report sitting in it, and a report is only evidence about THIS run if it
     is newer than the launch. Without the freshness test, last week's success
     would vouch for today's argparse error - the reassuring direction, which is
@@ -291,7 +289,7 @@ def _eval_left_a_reading(rung: Path, since: float = 0.0) -> bool:
     When the harness starts streaming, this is the right place to add it.
     """
     newest = 0.0
-    for path in (Path(rung) / evalreport.EVAL_REPORT_NAME,):
+    for path in (Path(run) / evalreport.EVAL_REPORT_NAME,):
         try:
             if path.is_file():
                 newest = max(newest, path.stat().st_mtime)
@@ -592,7 +590,7 @@ def router() -> APIRouter:
     def run_eval(body: EvalBody, request: Request) -> dict:
         """Measure a build that already exists. Detached, like a build.
 
-        An eval on a real rung is an hour, not a moment - the run that motivated
+        An eval on a real run is an hour, not a moment - the run that motivated
         this took 3484 seconds - so it detaches for the same reason a build
         does: a measurement must not die because the tab that started it closed.
         """
@@ -615,17 +613,17 @@ def router() -> APIRouter:
 
         # WHAT THERE IS TO MEASURE, ASKED OF THE DISK. See sources.evaluable
         # for why this is not "did a build succeed".
-        rungs = _evaluable_rungs(stage)
-        if body.rung:
-            chosen = next((r for r in rungs if r["name"] == body.rung), None)
+        runs = _evaluable_runs(stage)
+        if body.run:
+            chosen = next((r for r in runs if r["name"] == body.run), None)
             if chosen is None:
-                target = cwd / body.rung
+                target = cwd / body.run
                 why = (sources.evaluable(target).get("reason")
-                       if target.is_dir() else f"no rung named {body.rung!r}")
+                       if target.is_dir() else f"no run named {body.run!r}")
                 raise HTTPException(409, f"nothing to evaluate in "
-                                         f"{body.rung!r}: {why}")
-        elif rungs:
-            chosen = rungs[0]
+                                         f"{body.run!r}: {why}")
+        elif runs:
+            chosen = runs[0]
         else:
             raise HTTPException(
                 409, f"nothing in stage {stage.name!r} has a trained MoE in it "
@@ -653,7 +651,7 @@ def router() -> APIRouter:
             raise HTTPException(500, f"could not start the eval: {exc}") from exc
 
         started["stage"] = stage.name
-        started["rung"] = chosen["name"]
+        started["run"] = chosen["name"]
         started["mode"] = body.mode or "(the recipe's eval.mode)"
 
         code = started.get("exit_code")
@@ -688,7 +686,7 @@ def router() -> APIRouter:
             "log_tail": started.get("log_tail"),
             "event": started.get("error_event"),
             "measured": False,
-            "rung": chosen["name"],
+            "run": chosen["name"],
         })
 
     @api.post("/export")

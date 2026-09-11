@@ -9,7 +9,7 @@ being read as a verdict it does not carry.
     is the proof, and the three states are kept apart here.
   * `.stagehand-run.json` records what a detached build LAUNCHED, including
     whether the child survived being started. It was written and read by
-    nothing at all, so a build that died on arrival was invisible: no rung, no
+    nothing at all, so a build that died on arrival was invisible: no run, no
     manifest, no log, and a stage card reading "No runs here yet".
 
 Everything below is a READ. No test in this file writes into anything Theatre
@@ -35,24 +35,24 @@ from seren_theatre.config import StageConfig, TheatreConfig
 
 # ── fixtures ────────────────────────────────────────────────────────────────
 
-def _rung(root: Path, name: str = "dryrun_0.5B") -> Path:
-    """A directory that looks_like_rung agrees is a rung, via its GGUF."""
+def _run(root: Path, name: str = "dryrun_0.5B") -> Path:
+    """A directory that looks_like_run agrees is a run, via its GGUF."""
     d = root / name
     d.mkdir(parents=True)
     (d / "model.gguf").write_bytes(b"\0" * 16)
     return d
 
 
-def _gguf(rung: Path) -> Path:
-    return rung / "model.gguf"
+def _gguf(run: Path) -> Path:
+    return run / "model.gguf"
 
 
 # ── ① the smoke test has three states ───────────────────────────────────────
 
 def test_the_proof_is_a_pass(tmp_path):
-    rung = _rung(tmp_path)
-    (rung / "model.gguf.smokepass.txt").write_text("all checks passed")
-    out = sources.scan_rung(rung)
+    run = _run(tmp_path)
+    (run / "model.gguf.smokepass.txt").write_text("all checks passed")
+    out = sources.scan_run(run)
     assert out["smoke"]["state"] == sources.SMOKE_PASSED
     assert out["smoketested"] is True
 
@@ -65,9 +65,9 @@ def test_the_log_alone_is_not_a_pass(tmp_path):
     this assertion ever flips back to True, the viewer has resumed telling a
     person their broken model is fine.
     """
-    rung = _rung(tmp_path)
-    (rung / "model.gguf.smoketest.txt").write_text("... FAILED: degenerate output")
-    out = sources.scan_rung(rung)
+    run = _run(tmp_path)
+    (run / "model.gguf.smoketest.txt").write_text("... FAILED: degenerate output")
+    out = sources.scan_run(run)
     assert out["smoketested"] is False
     assert out["smoke"]["state"] == sources.SMOKE_UNPROVEN
     assert out["smoke"]["log"] == "model.gguf.smoketest.txt"
@@ -87,27 +87,27 @@ def test_the_middle_state_is_not_called_failed(tmp_path):
 
 
 def test_neither_file_is_not_run(tmp_path):
-    out = sources.scan_rung(_rung(tmp_path))
+    out = sources.scan_run(_run(tmp_path))
     assert out["smoke"]["state"] == sources.SMOKE_NOT_RUN
     assert out["smoketested"] is False
 
 
 def test_the_proof_wins_even_when_the_log_is_there(tmp_path):
     """The normal shape of a PASS: the writer wrote both files."""
-    rung = _rung(tmp_path)
-    (rung / "model.gguf.smoketest.txt").write_text("...")
-    (rung / "model.gguf.smokepass.txt").write_text("ok")
-    out = sources.scan_rung(rung)
+    run = _run(tmp_path)
+    (run / "model.gguf.smoketest.txt").write_text("...")
+    (run / "model.gguf.smokepass.txt").write_text("ok")
+    out = sources.scan_run(run)
     assert out["smoke"]["state"] == sources.SMOKE_PASSED
     assert out["smoke"]["log"] and out["smoke"]["proof"]
 
 
-def test_a_rung_with_no_gguf_has_no_smoke_reading(tmp_path):
+def test_a_run_with_no_gguf_has_no_smoke_reading(tmp_path):
     """`None`, not a state. There is nothing to have smoke-tested."""
     d = tmp_path / "dryrun_0.5B"
     (d / "fraunkenstein_moe_untrained").mkdir(parents=True)
     (d / "fraunkenstein_moe_untrained" / "config.json").write_text("{}")
-    out = sources.scan_rung(d)
+    out = sources.scan_run(d)
     assert out["smoke"] is None and out["smoketested"] is False
 
 
@@ -166,7 +166,7 @@ def test_a_started_launch_is_reported(tmp_path):
 def test_a_failed_launch_is_reported_with_its_dying_words(tmp_path):
     """The state the room most needs to show, because it leaves nothing else.
 
-    A build that dies on arrival creates no rung, no manifest and often no log,
+    A build that dies on arrival creates no run, no manifest and often no log,
     so before this the stage card read "No runs here yet" - a true sentence
     that says nothing about why.
     """
@@ -243,7 +243,7 @@ def test_a_corrupt_marker_is_reported_not_raised(tmp_path):
     assert out["launch"] is None
     assert "not readable JSON" in out["launch_error"]
     # and the rest of the stage reading is untouched
-    assert out["rungs"] == [] and out["exists"] is True
+    assert out["runs"] == [] and out["exists"] is True
 
 
 def test_a_marker_that_is_not_an_object_is_reported_not_raised(tmp_path):
@@ -277,7 +277,7 @@ def test_nothing_in_the_launch_reading_claims_the_run_is_alive_or_dead(tmp_path)
     what the run is DOING, and a second opinion about progress is how a
     dashboard starts disagreeing with itself. So: no key here is named for a
     live/dead conclusion, and `source` - the field that says which reading the
-    rung display is entitled to - is not touched by any of this.
+    run display is entitled to - is not touched by any of this.
     """
     stage = _stage(tmp_path)
     _marker(stage)
@@ -397,8 +397,8 @@ def test_reading_the_marker_did_not_drag_stagehand_onto_the_viewer(tmp_path):
 
 def test_api_state_carries_both_readings(tmp_path):
     stage = _stage(tmp_path)
-    rung = _rung(stage)
-    (rung / "model.gguf.smoketest.txt").write_text("FAILED")
+    run = _run(stage)
+    (run / "model.gguf.smoketest.txt").write_text("FAILED")
     _marker(stage, launch="failed", error="bad interpreter")
 
     cfg = TheatreConfig()
@@ -406,8 +406,8 @@ def test_api_state_carries_both_readings(tmp_path):
     body = TestClient(create_app(cfg)).get("/api/state").json()
     st = body["stages"][0]
     assert st["launch"]["launched"] is False
-    assert st["rungs"][0]["smoketested"] is False
-    assert st["rungs"][0]["smoke"]["state"] == sources.SMOKE_UNPROVEN
+    assert st["runs"][0]["smoketested"] is False
+    assert st["runs"][0]["smoke"]["state"] == sources.SMOKE_UNPROVEN
 
 
 def test_the_viewer_pack_stopped_reading_the_log_as_a_pass():
@@ -511,27 +511,27 @@ def test_the_evidence_is_the_marker_files_plus_the_newest_log(tmp_path):
 # ── ③ one run on stage, and the rest still in the payload ───────────
 
 def test_the_newest_run_by_manifest_started_is_the_current_one():
-    rungs = [{"name": "b", "path": "/x/b", "mtime": 5.0,
+    runs = [{"name": "b", "path": "/x/b", "mtime": 5.0,
               "manifest": {"started": 100.0}},
              {"name": "a", "path": "/x/a", "mtime": 9.0,
               "manifest": {"started": 900.0}}]
-    assert [r["name"] for r in sources.order_rungs(rungs)] == ["a", "b"]
+    assert [r["name"] for r in sources.order_runs(runs)] == ["a", "b"]
 
 
 def test_directory_mtime_orders_a_run_with_no_manifest():
     """Scraping is a first-class reading here, so an uninstrumented run still
     has to be datable - otherwise "the most recent" would silently mean "the
     most recent instrumented one"."""
-    rungs = [{"name": "b", "path": "/x/b", "mtime": 500.0, "manifest": None},
+    runs = [{"name": "b", "path": "/x/b", "mtime": 500.0, "manifest": None},
              {"name": "a", "path": "/x/a", "mtime": 100.0, "manifest": None}]
-    assert sources.order_rungs(rungs)[0]["name"] == "b"
+    assert sources.order_runs(runs)[0]["name"] == "b"
 
 
 def test_ordering_is_stable_when_nothing_can_be_dated():
-    rungs = [{"name": "a", "path": "/x/a", "mtime": None, "manifest": None},
+    runs = [{"name": "a", "path": "/x/a", "mtime": None, "manifest": None},
              {"name": "b", "path": "/x/b", "mtime": None, "manifest": None}]
-    assert [r["name"] for r in sources.order_rungs(rungs)] == ["b", "a"]
-    assert sources.run_started(rungs[0]) == 0.0
+    assert [r["name"] for r in sources.order_runs(runs)] == ["b", "a"]
+    assert sources.run_started(runs[0]) == 0.0
 
 
 def _instrumented(stage: Path, name: str, started: float, **over) -> Path:
@@ -555,23 +555,23 @@ def test_api_state_puts_one_run_first_and_still_carries_the_rest(tmp_path):
     cfg = TheatreConfig()
     cfg.stages = [StageConfig(name="Lab", path=str(stage))]
     st = TestClient(create_app(cfg)).get("/api/state").json()["stages"][0]
-    assert st["rungs"][0]["name"] == "dryrun_new"
+    assert st["runs"][0]["name"] == "dryrun_new"
     assert st["current"].endswith("dryrun_new")
     assert st["earlier"] == 1
-    assert len(st["rungs"]) == 2, "an earlier run was dropped from the payload"
+    assert len(st["runs"]) == 2, "an earlier run was dropped from the payload"
 
 
 def test_only_the_current_run_is_handed_the_stage_level_readings(tmp_path):
     """The log sits at STAGE level, so it is evidence about the run happening
-    NOW. Hanging a live log's mtime on a rung that finished last Tuesday would
+    NOW. Hanging a live log's mtime on a run that finished last Tuesday would
     be inventing a reading."""
     stage = _stage(tmp_path)
     _instrumented(stage, "dryrun_old", 100.0)
     _instrumented(stage, "dryrun_new", time.time() - 46 * 60)
     (stage / "msmoe-x.log").write_text("still going", encoding="utf-8")
     out = _scan(stage)
-    assert "quiet" in out["rungs"][0]
-    assert "quiet" not in out["rungs"][1]
+    assert "quiet" in out["runs"][0]
+    assert "quiet" not in out["runs"][1]
 
 
 def test_a_quiet_manifest_beside_a_live_log_is_not_reported_stalled(tmp_path):
@@ -582,7 +582,7 @@ def test_a_quiet_manifest_beside_a_live_log_is_not_reported_stalled(tmp_path):
                   stages=[{"id": "finetune.python", "label": "Fine-tune python",
                            "status": "running", "started": started}])
     (stage / "msmoe-x.log").write_text("step 601/602", encoding="utf-8")
-    current = _scan(stage)["rungs"][0]
+    current = _scan(stage)["runs"][0]
     assert current["manifest"]["state"] == "stalled", (
         "the manifest-only reading is unchanged and still says what it says")
     assert current["state"] == "running"
@@ -597,19 +597,19 @@ def test_a_run_that_really_did_go_quiet_still_says_so(tmp_path):
                         stages=[{"id": "finetune.python",
                                  "label": "Fine-tune python",
                                  "status": "running", "started": started}])
-    # The rung DIRECTORY is evidence now (sources.rung_activity), so a fixture
+    # The run DIRECTORY is evidence now (sources.run_activity), so a fixture
     # that claims four hours of silence has to actually be four hours old. It
     # was written a millisecond ago and claiming otherwise in the manifest,
     # which no real run does: the manifest write is what set the directory
     # mtime. Backdating makes the fixture model the run it is named for. The
     # assertions below are untouched.
     _backdate(run, started)
-    current = _scan(stage)["rungs"][0]
+    current = _scan(stage)["runs"][0]
     assert current["state"] == "stalled"
     assert current["state_source"] == "manifest"
 
 
-# ── ④ the rung directory is evidence too ────────────────────────────────────
+# ── ④ the run directory is evidence too ────────────────────────────────────
 #
 # THE LIE THIS REPLACES, and it is ② all over again: the evidence was on disk
 # and nobody looked. A build run BY HAND sends stdout to the terminal, so there
@@ -617,7 +617,7 @@ def test_a_run_that_really_did_go_quiet_still_says_so(tmp_path):
 # found nothing, and a router training at 3157/4000 at 3.47 s/it was reported,
 # in red, as "Nothing here has been written for 2h 42m".
 #
-# Meanwhile the rung directory was churning: `tmp_<expert>/checkpoint-N/`,
+# Meanwhile the run directory was churning: `tmp_<expert>/checkpoint-N/`,
 # `moe_trained/`, the stitch and export artifacts, all immediate children, and
 # creating a subdirectory bumps its parent's mtime.
 #
@@ -632,33 +632,33 @@ def _backdate(path: Path, when: float) -> None:
         os.utime(child, (when, when))
 
 
-def test_a_churning_rung_directory_is_a_reading(tmp_path):
+def test_a_churning_run_directory_is_a_reading(tmp_path):
     """THE HAND-RUN CASE, pinned. No log, no marker, and the run is alive."""
-    rung = tmp_path / "dryrun_0.5B"
-    (rung / "tmp_python" / "checkpoint-3157").mkdir(parents=True)
-    out = sources.rung_activity(rung)
+    run = tmp_path / "dryrun_0.5B"
+    (run / "tmp_python" / "checkpoint-3157").mkdir(parents=True)
+    out = sources.run_activity(run)
     assert out["role"] == sources.ARTIFACTS_ROLE
     assert out["exists"] is True
     assert out["since"] < 60
     assert out["entries"] == 1
 
 
-def test_a_quiet_rung_directory_is_also_a_reading(tmp_path):
-    rung = tmp_path / "dryrun_0.5B"
-    (rung / "moe_trained").mkdir(parents=True)
-    _backdate(rung, time.time() - 4 * 3600)
-    out = sources.rung_activity(rung)
+def test_a_quiet_run_directory_is_also_a_reading(tmp_path):
+    run = tmp_path / "dryrun_0.5B"
+    (run / "moe_trained").mkdir(parents=True)
+    _backdate(run, time.time() - 4 * 3600)
+    out = sources.run_activity(run)
     assert out["exists"] is True
     assert out["since"] > 3 * 3600
 
 
-def test_a_rung_directory_that_is_not_there_is_reported_not_guessed(tmp_path):
-    out = sources.rung_activity(tmp_path / "never-existed")
+def test_a_run_directory_that_is_not_there_is_reported_not_guessed(tmp_path):
+    out = sources.run_activity(tmp_path / "never-existed")
     assert out["exists"] is False
     assert out["mtime"] is None and out["since"] is None
 
 
-def test_no_rung_means_exactly_the_two_readings_there_always_were(tmp_path):
+def test_no_run_means_exactly_the_two_readings_there_always_were(tmp_path):
     """The default is the old behaviour, so every existing caller is unmoved."""
     stage = _stage(tmp_path)
     (stage / "msmoe-x.log").write_text("x", encoding="utf-8")
@@ -669,21 +669,21 @@ def test_no_rung_means_exactly_the_two_readings_there_always_were(tmp_path):
 def test_the_artifacts_reading_is_its_own_row_and_not_folded_into_the_log(tmp_path):
     stage = _stage(tmp_path)
     (stage / "msmoe-x.log").write_text("x", encoding="utf-8")
-    rung = stage / "dryrun_0.5B"
-    rung.mkdir()
+    run = stage / "dryrun_0.5B"
+    run.mkdir()
     parsed = [sources.parse_run_log(stage / "msmoe-x.log", 4096)]
-    roles = [f["role"] for f in sources.activity_files(None, parsed, rung)]
+    roles = [f["role"] for f in sources.activity_files(None, parsed, run)]
     assert roles == ["log", sources.ARTIFACTS_ROLE], (
-        "the rung directory was merged into the log's reading, which would "
+        "the run directory was merged into the log's reading, which would "
         "report 'the log wrote 14s ago' about a run that has no log")
 
 
 def test_the_artifacts_reading_names_no_conclusion(tmp_path):
     """Same line test_the_quiet_reading_claims_neither_alive_nor_dead holds one
     reading over. A stat() on a directory cannot tell you a process is alive."""
-    rung = tmp_path / "dryrun_0.5B"
-    rung.mkdir()
-    out = sources.rung_activity(rung)
+    run = tmp_path / "dryrun_0.5B"
+    run.mkdir()
+    out = sources.run_activity(run)
     for forbidden in ("alive", "dead", "killed", "stalled", "state", "status",
                       "running", "finished"):
         assert forbidden not in out
@@ -692,7 +692,7 @@ def test_the_artifacts_reading_names_no_conclusion(tmp_path):
 def test_a_hand_run_build_with_no_log_is_no_longer_reported_stalled(tmp_path):
     """END TO END, on the exact shape the author was looking at: a manifest
     quiet for hours, no log in the stage, no marker, and checkpoints landing in
-    the rung directory the whole time."""
+    the run directory the whole time."""
     stage = _stage(tmp_path)
     started = time.time() - 4 * 3600
     run = _instrumented(stage, "dryrun_0.5B", started,
@@ -700,7 +700,7 @@ def test_a_hand_run_build_with_no_log_is_no_longer_reported_stalled(tmp_path):
                                  "status": "running", "started": started}])
     _backdate(run, started)
     (run / "moe_trained").mkdir()          # written seconds ago, like a live run
-    current = _scan(stage)["rungs"][0]
+    current = _scan(stage)["runs"][0]
     assert current["manifest"]["state"] == "stalled", (
         "the manifest-only reading is unchanged and still says what it says")
     assert current["state"] == "running"
@@ -709,7 +709,7 @@ def test_a_hand_run_build_with_no_log_is_no_longer_reported_stalled(tmp_path):
     assert sources.ARTIFACTS_ROLE in roles
 
 
-def test_the_rung_directory_is_read_one_level_deep_and_no_further(
+def test_the_run_directory_is_read_one_level_deep_and_no_further(
         tmp_path, monkeypatch):
     """~45 GB of shards live under here. ONE scandir, then stat the entries.
 
@@ -719,18 +719,18 @@ def test_the_rung_directory_is_read_one_level_deep_and_no_further(
     stupid way to perturb a measurement", so this is the check that keeps it
     from becoming one.
     """
-    rung = tmp_path / "dryrun_0.5B"
+    run = tmp_path / "dryrun_0.5B"
     for expert in ("python", "rust", "go"):
         for step in range(20):
-            (rung / f"tmp_{expert}" / f"checkpoint-{step}" / "deep").mkdir(
+            (run / f"tmp_{expert}" / f"checkpoint-{step}" / "deep").mkdir(
                 parents=True)
     scanned = []
     real_scandir = os.scandir
     monkeypatch.setattr(os, "scandir",
                         lambda p: (scanned.append(str(p)), real_scandir(p))[1])
-    out = sources.rung_activity(rung)
+    out = sources.run_activity(run)
     assert out["entries"] == 3, "the top level is three tmp_* directories"
-    assert scanned == [str(rung)], (
+    assert scanned == [str(run)], (
         f"the reader descended into {len(scanned)} directories - something "
         f"started recursing, and this tree is 45 GB of shards")
 
@@ -747,9 +747,9 @@ def test_the_room_no_longer_concludes_the_process_was_killed():
         "the viewer is no longer reading the activity evidence at all")
 
 
-# ── overlapping rung globs ──────────────────────────────────────────────────
+# ── overlapping run globs ──────────────────────────────────────────────────
 
-def test_a_rung_matched_by_two_globs_is_scanned_once(tmp_path):
+def test_a_run_matched_by_two_globs_is_scanned_once(tmp_path):
     """OVERLAPPING GLOBS ARE THE NORMAL CASE, not a misconfiguration.
 
     A sensible list - `msmoe_*` for everything, plus `msmoe_run_*` spelled out
@@ -757,9 +757,9 @@ def test_a_rung_matched_by_two_globs_is_scanned_once(tmp_path):
     twice. The log loop above it has always deduped; this one did not, and the
     asymmetry was the tell.
 
-    Three consequences, none of which announce themselves: scan_rung is the
+    Three consequences, none of which announce themselves: scan_run is the
     expensive call and ran twice, `earlier` counted a phantom run per
-    duplicate, and the same rung reached harvest twice. On screen it looked
+    duplicate, and the same run reached harvest twice. On screen it looked
     like a stage that genuinely had two runs with the same name.
     """
     import json
@@ -776,17 +776,17 @@ def test_a_rung_matched_by_two_globs_is_scanned_once(tmp_path):
         "MsMoEMaker", tmp_path, ["*.log"],
         ["msmoe_*", "gauntlet-runs/*", "msmoe_run_*"], 4096)
 
-    paths = [r["path"] for r in got["rungs"]]
+    paths = [r["path"] for r in got["runs"]]
     assert len(paths) == len(set(paths)), (
-        f"a rung was scanned twice: {paths}. Two globs matching one directory "
+        f"a run was scanned twice: {paths}. Two globs matching one directory "
         f"is an ordinary config, not a mistake.")
     assert got["earlier"] == 2, (
         f"earlier={got['earlier']} counts a duplicate as a separate run")
 
 
-def test_a_nested_glob_finds_rungs_in_a_subdirectory(tmp_path):
+def test_a_nested_glob_finds_runs_in_a_subdirectory(tmp_path):
     """`gauntlet-runs/*` is a legitimate pattern: a recipe pointing its
-    output roots at `gauntlet-runs/{size}` puts every rung one level down, and
+    output roots at `gauntlet-runs/{size}` puts every run one level down, and
     the stage is still the directory the build runs in."""
     import json
 
@@ -800,4 +800,4 @@ def test_a_nested_glob_finds_rungs_in_a_subdirectory(tmp_path):
 
     got = sources.scan_stage("MsMoEMaker", tmp_path, ["*.log"],
                              ["gauntlet-runs/*"], 4096)
-    assert sorted(r["name"] for r in got["rungs"]) == ["0.5B", "1.5B"]
+    assert sorted(r["name"] for r in got["runs"]) == ["0.5B", "1.5B"]

@@ -44,7 +44,7 @@ def writer() -> dict:
 
 @needs_writer
 @pytest.mark.parametrize("name", ["MANIFEST_NAME", "SCHEMA_VERSION",
-                                  "STALE_AFTER_SECONDS"])
+                                  "STALE_AFTER_SECONDS", "RECIPE_STEM"])
 def test_format_constants_match(writer, name):
     theirs, ours = writer.get(name), getattr(mf, name)
     assert theirs == ours, (

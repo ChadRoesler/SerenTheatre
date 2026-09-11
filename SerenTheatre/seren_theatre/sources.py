@@ -22,12 +22,12 @@ import os
 import re
 import time
 from dataclasses import dataclass, field, asdict
-from fnmatch import fnmatch
+from fnmatch import fnmatch, translate as _fn_translate
 
 from . import evalreport as _results
 from . import manifest as _manifest
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 # ── raw reading ─────────────────────────────────────────────────────────────
@@ -153,7 +153,7 @@ def parse_run_log(path: Path, limit: int) -> RunLog:
 
         m = _CFG.match(line)
         if m:
-            # "[cfg] rung: size=0.5B ... target_steps=150" -> flat key/value.
+            # "[cfg] run: size=0.5B ... target_steps=150" -> flat key/value.
             for k, v in re.findall(r"(\w+)=(\S+)", m.group(1)):
                 out.cfg[k] = v
             continue
@@ -254,10 +254,23 @@ def parse_run_log(path: Path, limit: int) -> RunLog:
 # and it survives the pipeline renaming things.
 #
 # Scraping is the FALLBACK. The globs below hardcode the pipeline's internal
-# artifact names, which is a real coupling: rename `qwen_coder_*` during the
-# ms-moe-maker decomposition and this reports "no specialists" for a perfectly
-# healthy run, confidently. That is the worst way for a dashboard to be wrong,
-# and it is exactly why the manifest exists.
+# artifact names, which is a real coupling - and the coupling BIT, exactly as
+# this comment predicted it would. The prediction used to end here, and that
+# was the whole defect: somebody wrote the warning and never grepped.
+#
+# WHAT HAPPENED. ms-moe-maker renamed every one of these during the
+# decomposition - `qwen_coder_*` became `specialist_*`, and the two
+# fraunkenstein_* directories became `moe_untrained` and `moe_trained`. Theatre
+# went on looking for the old names and so reported `specialists: []`,
+# `skeleton: False`, `final: False` for every healthy ms-moe-maker run there
+# has ever been. Nothing looked broken, because the manifest half kept working
+# and rendered a confident FINISHED card over a disk reading of nothing.
+#
+# So BOTH vocabularies live here now, and the old ones are not deadweight: a
+# viewer whose entire promise is "a stage is a directory" must not go blind on
+# a run somebody built last year. tests/test_artifact_names.py pins this table
+# against ms_moe_maker.run.stages whenever the builder is importable, which is
+# the check whose absence let the rename land silently.
 #
 # But scraping must NEVER be deleted, because "a stage is a directory" is the
 # whole reason Theatre requires nothing. A folder somebody redirected a log
@@ -265,11 +278,44 @@ def parse_run_log(path: Path, limit: int) -> RunLog:
 # So: believe the manifest when it is there, read the disk when it is not, and
 # say which one you did.
 
+#: The three readings a run directory can offer, named rather than spelled at
+#: each use site so that `scan_run`, `looks_like_run` and `evaluable` cannot
+#: drift apart the way this table drifted from the builder.
+SPECIALISTS_STAGE = "specialists"
+SKELETON_STAGE = "skeleton"
+FINAL_STAGE = "final"
+
 _STAGES = (
-    ("specialists", "qwen_coder_*", "config.json"),
-    ("skeleton", "fraunkenstein_moe_untrained", "config.json"),
-    ("final", "fraunkenstein_agent_final", "config.json"),
+    # ms-moe-maker, current. Quoted from ms_moe_maker.run.stages: ARTIFACTS
+    # for the two MoE directories, FINETUNE_ARTIFACT for the specialists.
+    (SPECIALISTS_STAGE, "specialist_*", "config.json"),
+    (SKELETON_STAGE, "moe_untrained", "config.json"),
+    (FINAL_STAGE, "moe_trained", "config.json"),
+    # FraunkensteinsLab-era, kept on purpose. These directories still exist on
+    # disks that predate the rename, and reading one is the difference between
+    # a viewer that requires nothing and a viewer that requires a recent build.
+    (SPECIALISTS_STAGE, "qwen_coder_*", "config.json"),
+    (SKELETON_STAGE, "fraunkenstein_moe_untrained", "config.json"),
+    (FINAL_STAGE, "fraunkenstein_agent_final", "config.json"),
 )
+
+
+def _rows_for(stage: str) -> Tuple[Tuple[str, str], ...]:
+    """Every (pattern, marker) that means `stage`, newest vocabulary first."""
+    return tuple((p, m) for name, p, m in _STAGES if name == stage)
+
+
+def _expert_from(name: str, pattern: str) -> str:
+    """The expert's name with the artifact prefix taken off.
+
+    Only a plain trailing-`*` pattern has a prefix that can be removed by
+    arithmetic; anything else is reported whole rather than guessed at, because
+    a half-stripped expert name is worse than an ugly one.
+    """
+    if pattern.endswith("*") and "*" not in pattern[:-1]:
+        return name[len(pattern) - 1:]
+    return name
+
 
 # ── the smoke test: the LOG and the PROOF are different files ───────────────
 #
@@ -329,9 +375,9 @@ def _smoke_reading(gguf: Path) -> Dict[str, Any]:
 #
 # `.stagehand-run.json` is dropped by stagehand.run_detached into the CWD a
 # build was launched in - the stage directory, beside the log and events files,
-# NOT inside a rung. Stagehand does not know the rung layout and is not going to
+# NOT inside a run. Stagehand does not know the run layout and is not going to
 # learn it, so this is read at stage level, which is also where it is most
-# useful: a launch that died on arrival never creates a rung at all, so the rung
+# useful: a launch that died on arrival never creates a run at all, so the run
 # cards are exactly the place it would be invisible.
 #
 # NAMED HERE, NOT IMPORTED FROM stagehand. sources.py is on the viewer's import
@@ -489,10 +535,13 @@ def read_launch(directory: Path) -> tuple:
                 break
 
     files: List[Dict[str, Any]] = []
+    events_path = None
     for role, key in (("log", "log_file"), ("events", "events_file")):
         value = payload.get(key)
         if isinstance(value, str) and value:
             files.append(_file_activity(value, role))
+            if key == "events_file":
+                events_path = value
     stamps = [f["mtime"] for f in files if f["mtime"] is not None]
     last = max(stamps) if stamps else None
 
@@ -532,59 +581,227 @@ def read_launch(directory: Path) -> tuple:
         "started": payload.get("started"),
         "command_line": command_line,
         "files": files,
+        # WHAT THE BUILD SAID ABOUT ITSELF, from the file the marker already
+        # named. The marker is STAGEHAND's account - what it launched and
+        # whether the child survived being started. This is the BUILDER's, and
+        # the split is the point: the marker cannot know the run directory
+        # because stagehand does not know the run layout and is not going to
+        # learn it, while the builder chose the directory and says so.
+        #
+        # STRICTLY BOUNDED TO "WHERE AND UNDER WHAT". It answers which directory
+        # this build is writing into and what environment was imposed on it, and
+        # it feeds no status, no stage state and no progress number - the
+        # manifest keeps that job, permanently. A second opinion about what a
+        # run is DOING is how a dashboard starts disagreeing with itself, and
+        # stagehand's own docstring said so before any of this existed.
+        "run": read_started(events_path),
         "last_activity": last,
         "since_activity": (max(0.0, time.time() - last)
                            if last is not None else None),
     }, None
 
 
+#: How deep under a stage path a run may sit before Theatre stops looking.
+#:
+#: THREE, AND THE NUMBER IS CHOSEN BY WHICH WAY IT FAILS. `roots.output` is a
+#: template - `msmoe_run_{size}` lands a run at depth 1, `gauntlet-runs/{size}`
+#: at depth 2 - so 2 covers every layout ms-moe-maker produces today and 3
+#: leaves room for one the author of this line has not seen.
+#:
+#: Being too SHALLOW loses a run silently: it is not drawn, and because harvest
+#: only ever sees runs the scan found, it is never archived either. Being too
+#: DEEP costs about twenty milliseconds per refresh on an 87,000-entry
+#: workbench. Those are not comparable prices, so this errs deep.
+RUN_DEPTH_DEFAULT = 3
 
-def looks_like_rung(root: Path) -> bool:
+
+# COMPILED ONCE PER TABLE, and that is a measurement rather than a habit.
+# `fnmatch.fnmatch` normcases its arguments and re-consults its cache on every
+# call, and this predicate runs it against every entry of every directory under
+# a stage: on a realistic workbench it was 295,200 calls and 70% of the cost of
+# one discovery pass.
+#
+# Keyed on the table object so a test that installs a different _STAGES gets
+# matchers for the table it installed. A set compiled at import would make the
+# fast path quietly ignore the very thing a mutation test is changing.
+_MATCHERS: Dict[Any, Tuple[Tuple[str, Any, str], ...]] = {}
+
+
+def _matchers() -> Tuple[Tuple[str, Any, str], ...]:
+    hit = _MATCHERS.get(_STAGES)
+    if hit is None:
+        hit = tuple((stage, re.compile(_fn_translate(pattern)).match, marker)
+                    for stage, pattern, marker in _STAGES)
+        _MATCHERS[_STAGES] = hit
+    return hit
+
+
+def _run_reading(root: Path) -> Tuple[bool, List[Path]]:
+    """Is this a run, and what are its subdirectories - from ONE read.
+
+    TWO ANSWERS FROM ONE SCANDIR, because discovery needs both and asking
+    separately meant reading the big directories twice: a forty-thousand-entry
+    shard cache walked end to end to learn it holds no subdirectories, then
+    walked again to learn it is not a run. Sharing the read halved a
+    discovery pass.
+
+    A MANIFEST ENDS THE QUESTION AND THE DESCENT. It is one stat, it is true
+    for every instrumented run from its first second, and a run's children are
+    artifacts - never runs - so there is nothing below worth enumerating.
+
+    The subdirectory list is what makes pruning free: a caller that gets
+    `True` should not descend, and one that gets `False` already holds the
+    children it would otherwise have to go back and ask for.
+    """
+    try:
+        if (root / _manifest.MANIFEST_NAME).is_file():
+            return True, []
+    except OSError:
+        return False, []
+
+    is_run = False
+    subdirs: List[Path] = []
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                name = entry.name
+                # DIRENT TYPE BEFORE PATTERN. A stage artifact is a directory,
+                # so testing the cheap thing first skips every file in a cache
+                # before it can reach a regex - which is where the 295,200
+                # calls went.
+                if not entry.is_dir(follow_symlinks=False):
+                    if not is_run and name.endswith(".gguf"):
+                        is_run = True
+                    continue
+                subdirs.append(Path(entry.path))
+                if is_run:
+                    continue
+                for _stage, match, marker in _matchers():
+                    if match(name) and os.path.isfile(
+                            os.path.join(entry.path, marker)):
+                        is_run = True
+                        break
+    except OSError:
+        return False, []
+    return is_run, subdirs
+
+
+def looks_like_run(root: Path) -> bool:
     """Is this directory a RUN, or just something the glob happened to catch?
 
-    The globs are patterns, and a pattern cannot tell a rung from its
+    The globs are patterns, and a pattern cannot tell a run from its
     neighbours: `dryrun_*` matches `dryrun_0.5B` (a run) AND `dryrun_data`
     (the shared corpus root, which is not a run and never will be). Theatre
-    rendered the corpus as an empty rung card reading "Nothing built here yet",
+    rendered the corpus as an empty run card reading "Nothing built here yet",
     which is a true sentence about a directory that was never going to have
     anything built in it - so it reads as a failure and is only clutter.
 
     Note the asymmetry that hid it: the non-dryrun globs are `*_agent_*`, which
     `fraunkenstein_data` escapes. So this only ever appeared in DRYRUN mode -
-    the mode you use for every shakedown and never for a real rung. The worst
+    the mode you use for every shakedown and never for a real run. The worst
     possible distribution for noticing.
 
-    So: ask what the directory IS, not what its name looks like. A rung has a
+    So: ask what the directory IS, not what its name looks like. A run has a
     manifest (an instrumented run, even one that has produced nothing yet), or
-    it has rung-shaped artifacts (an uninstrumented one). Anything else is a
+    it has run-shaped artifacts (an uninstrumented one). Anything else is a
     directory that shares a prefix.
+
+    This is one half of `_run_reading` and delegates to it rather than
+    repeating it, for the reason the _STAGES table learned the hard way: two
+    copies of one rule are two rules, and they drift.
     """
-    try:
-        if (root / _manifest.MANIFEST_NAME).is_file():
-            return True
-    except OSError:
-        return False
-    try:
-        for entry in root.iterdir():
-            n = entry.name
-            if n.endswith(".gguf"):
-                return True
-            for _, pattern, marker in _STAGES:
-                if fnmatch(n, pattern) and (entry / marker).is_file():
-                    return True
-    except OSError:
-        return False
-    return False
+    return _run_reading(root)[0]
 
 
-#: The one _STAGES row that means "a trained MoE is on disk here". Named
-#: rather than indexed so that reordering that table cannot silently change
-#: what Theatre thinks is evaluable.
-FINAL_STAGE = "final"
+def discover_runs(root: Path,
+                   max_depth: int = RUN_DEPTH_DEFAULT) -> List[Path]:
+    """Every run under `root`, found by asking directories what they are.
+
+    WHY THIS EXISTS AT ALL. Discovery used to be a list of globs in the config,
+    and a glob is a promise the person has to keep: name your output root
+    something the pattern matches, or your run is not merely undrawn but
+    UNARCHIVED, because harvest only sees runs the scan found. That promise
+    was broken twice by people who had the config open - once by a default that
+    did not match the pipeline's own output directory, and once by a recipe
+    whose `roots.output` fell outside a whitelist written the same evening.
+    Both times the symptom was an empty stage, which reads as "nothing built
+    here" rather than "the viewer is looking somewhere else".
+
+    So Theatre stops being told and starts looking. `looks_like_run` was
+    always the real gate; the globs only ever bounded the walk. This bounds it
+    two better ways: stop at a run, because its children are artifacts, and
+    stop at `max_depth`. The expensive directories on a workbench - shard and
+    HF caches, corpora, a llama.cpp build tree - are either inside a run, and
+    pruned, or shallow and cheap to reject.
+
+    Breadth-first so `max_depth` means depth and not recursion order, and
+    sorted at the end so two boxes reading one directory agree about what they
+    found.
+    """
+    found: List[Path] = []
+    seen: set[Path] = set()
+    try:
+        with os.scandir(root) as entries:
+            frontier = [Path(e.path) for e in entries
+                        if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        return []
+
+    depth = 1
+    while frontier and depth <= max_depth:
+        deeper: List[Path] = []
+        for candidate in frontier:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            is_run, subdirs = _run_reading(candidate)
+            if is_run:
+                found.append(candidate)
+                continue
+            deeper.extend(subdirs)
+        frontier = deeper
+        depth += 1
+    return sorted(found)
+
+
+def resolve_runs(root: Path, run_globs: Sequence[str],
+                  max_depth: int = RUN_DEPTH_DEFAULT) -> List[Path]:
+    """Which directories under `root` are runs. One answer, for every caller.
+
+    ONE FUNCTION ON PURPOSE. `scan_stage` drew the cards and
+    `backstage._evaluable_runs` decided what the eval button was allowed to
+    measure, and each walked the tree its own way - so a run one of them found
+    was not necessarily a run the other did, and nothing would have said so.
+    That is the same two-copies-of-one-rule defect that let the artifact rename
+    half-land, and it is cheaper to refuse it here than to find it later.
+
+    An explicit `runs` list still wins, because a person who has told Theatre
+    exactly where to look has said something worth obeying - a tree too large
+    to walk, or a stage that should show one run out of forty. Empty means
+    look, which is the default: mandate is not ethos, and a knob that must be
+    kept in sync with another file will be wrong on somebody else's machine.
+    """
+    if run_globs:
+        # DEDUPED. Overlapping globs are the normal case, not a
+        # misconfiguration: `msmoe_*` plus `msmoe_run_*` matches one directory
+        # twice, and it was then scanned twice, rendered twice, counted twice
+        # in `earlier`, and handed to harvest twice.
+        out: List[Path] = []
+        seen: set[Path] = set()
+        for pattern in run_globs:
+            for p in sorted(root.glob(pattern)):
+                # The glob proposes; the directory decides. See looks_like_run.
+                if p in seen:
+                    continue
+                if p.is_dir() and looks_like_run(p):
+                    seen.add(p)
+                    out.append(p)
+        return out
+    return discover_runs(root, max_depth=max_depth)
 
 
 def evaluable(root: Path) -> Dict[str, Any]:
-    """Is there something in this rung for `ms-moe-maker eval` to measure?
+    """Is there something in this run for `ms-moe-maker eval` to measure?
 
     ASK THE DISK, NOT THE HISTORY. The obvious gate for an eval button is "did
     a build finish successfully", and it is the wrong one three ways: a manifest
@@ -594,37 +811,55 @@ def evaluable(root: Path) -> Dict[str, Any]:
     output directory was moved would offer a button that only 409s. The
     question eval itself asks is whether the trained MoE is on disk - its own
     CLI refuses with "run build first" on exactly that - so this asks the same
-    thing, from the same table the rung scan reads.
+    thing, from the same table the run scan reads.
 
     Returns {ok, reason, path}. The reason is for the person, and it is present
     when ok is False, because a hidden button and a button that explains itself
     are different kindnesses and only one of them teaches you anything.
     """
-    marker = next((m for name, _p, m in _STAGES if name == FINAL_STAGE), None)
-    pattern = next((p for name, p, _m in _STAGES if name == FINAL_STAGE), None)
-    if marker is None or pattern is None:
+    rows = _rows_for(FINAL_STAGE)
+    if not rows:
         # The table changed shape under us. Say so rather than guessing.
         return {"ok": False, "path": None,
                 "reason": f"no {FINAL_STAGE!r} row in the stage table, so "
                           f"Theatre cannot tell what a finished MoE looks like"}
-    final = root / pattern
-    try:
-        if (final / marker).is_file():
-            return {"ok": True, "path": str(final), "reason": ""}
-    except OSError as exc:
-        return {"ok": False, "path": str(final),
-                "reason": f"cannot read {final.name}: {exc}"}
-    return {"ok": False, "path": str(final),
+
+    # EVERY row, not the first one. This used to take `next(...)` off the
+    # table, which was fine while there was exactly one vocabulary and became a
+    # silent refusal the moment there were two: the button asked for
+    # fraunkenstein_agent_final, ms-moe-maker had written moe_trained, and the
+    # answer was a confident "no trained MoE here yet" standing next to one.
+    for pattern, marker in rows:
+        try:
+            found = sorted(root.glob(pattern))
+        except OSError as exc:
+            return {"ok": False, "path": str(root),
+                    "reason": f"cannot read {root.name}: {exc}"}
+        for candidate in found:
+            try:
+                if (candidate / marker).is_file():
+                    return {"ok": True, "path": str(candidate), "reason": ""}
+            except OSError as exc:
+                return {"ok": False, "path": str(candidate),
+                        "reason": f"cannot read {candidate.name}: {exc}"}
+
+    # NAME EVERY VOCABULARY IT LOOKED FOR. A reader staring at a directory that
+    # obviously holds a model needs to know which name Theatre wanted, and a
+    # message that mentions only the current one is how somebody with an older
+    # run on disk concludes the viewer is broken.
+    wanted = " or ".join(f"{pattern}/" for pattern, _m in rows)
+    return {"ok": False, "path": str(root / rows[0][0]),
             "reason": f"no trained MoE here yet - eval measures "
-                      f"{pattern}/, and it has no {marker}. Build first."}
+                      f"{wanted}, and none of those has a "
+                      f"{rows[0][1]}. Build first."}
 
 
-def scan_rung(root: Path) -> Dict[str, Any]:
-    """What EXISTS for one rung. Presence, not promises.
+def scan_run(root: Path) -> Dict[str, Any]:
+    """What EXISTS for one run. Presence, not promises.
 
     The scraping half deliberately mirrors what the pipeline's own _done()
     checks, because the dashboard must agree with the thing it is describing.
-    A rung that Theatre calls finished and the pipeline re-runs is worse than
+    A run that Theatre calls finished and the pipeline re-runs is worse than
     no dashboard.
 
     `source` in the returned dict says which reading this was - "manifest",
@@ -671,7 +906,7 @@ def scan_rung(root: Path) -> Dict[str, Any]:
     # exactly the way the GGUF and the smoke-pass marker are.
     #
     # THE MANIFEST'S build_id IS PASSED IN, and that is the load-bearing part.
-    # A rung gets rebuilt and the old eval report stays there, still valid
+    # A run gets rebuilt and the old eval report stays there, still valid
     # JSON, still full of confident numbers about a model that no longer
     # exists. Rendering that beside the new build is the C# 0/10 failure in a
     # new costume: nothing looks wrong and the reader draws a conclusion about
@@ -701,21 +936,40 @@ def scan_rung(root: Path) -> Dict[str, Any]:
     except OSError:
         return out
 
+    # READ FROM THE TABLE, NOT FROM MEMORY. This loop used to spell the three
+    # artifact names out a SECOND time - `startswith("qwen_coder_")` and two
+    # `==` comparisons - which is how a rename half-landed: _STAGES is what
+    # looks_like_run and evaluable consult, this was what the card was drawn
+    # from, and nothing made the two agree. Same table now, so a name added
+    # above is a name understood here, and there is no second place to forget.
     for entry in entries:
         n = entry.name
-        if n.startswith("qwen_coder_") and (entry / "config.json").is_file():
-            out["specialists"].append(n[len("qwen_coder_"):])
-        elif n == "fraunkenstein_moe_untrained" and (entry / "config.json").is_file():
-            out["skeleton"] = True
+        matched = False
+        for stage, pattern, marker in _STAGES:
+            if not fnmatch(n, pattern):
+                continue
             try:
-                cfg = json.loads((entry / "config.json").read_text())
-                out["experts"] = cfg.get("expert_names")
-                out["dense_layers"] = cfg.get("mlp_only_layers")
-            except (OSError, ValueError):
-                pass
-        elif n == "fraunkenstein_agent_final" and (entry / "config.json").is_file():
-            out["final"] = True
-        elif n.endswith(".gguf"):
+                if not (entry / marker).is_file():
+                    continue
+            except OSError:
+                continue
+            matched = True
+            if stage == SPECIALISTS_STAGE:
+                out["specialists"].append(_expert_from(n, pattern))
+            elif stage == SKELETON_STAGE:
+                out["skeleton"] = True
+                try:
+                    cfg = json.loads((entry / marker).read_text())
+                    out["experts"] = cfg.get("expert_names")
+                    out["dense_layers"] = cfg.get("mlp_only_layers")
+                except (OSError, ValueError):
+                    pass
+            elif stage == FINAL_STAGE:
+                out["final"] = True
+            break
+        if matched:
+            continue
+        if n.endswith(".gguf"):
             out["gguf"] = {"name": n, "gb": round(entry.stat().st_size / 1e9, 2)}
             # CONVERTED IS NOT PROVEN, and neither is TESTED. This line used to
             # read `.smoketest.txt` - the LOG, which the writer opens before the
@@ -764,8 +1018,8 @@ def scan_rung(root: Path) -> Dict[str, Any]:
 ARTIFACTS_ROLE = "artifacts"
 
 
-def rung_activity(rung: Optional[Path]) -> Optional[Dict[str, Any]]:
-    """The rung directory's OWN churn, as one reading. Never raises.
+def run_activity(run: Optional[Path]) -> Optional[Dict[str, Any]]:
+    """The run directory's OWN churn, as one reading. Never raises.
 
     WHY THIS EXISTS, and it is the same bug as the one above wearing different
     clothes: the evidence was on disk and nobody looked. A build run by hand in
@@ -774,10 +1028,10 @@ def rung_activity(rung: Optional[Path]) -> Optional[Dict[str, Any]]:
     and a live router training at 3157/4000 at 3.47 s/it read, in red, "Nothing
     here has been written for 2h 42m - not the manifest, not the log."
 
-    But the rung directory is CHURNING the whole time. Fine-tune writes
+    But the run directory is CHURNING the whole time. Fine-tune writes
     `tmp_<expert>/checkpoint-N/`, the router writes into `moe_trained/`, and
     stitch, abliterate and export all drop artifacts. Every one of those is an
-    immediate child of the rung directory, and CREATING A SUBDIRECTORY BUMPS
+    immediate child of the run directory, and CREATING A SUBDIRECTORY BUMPS
     ITS PARENT'S MTIME - so the directory itself plus one level of children
     catches all of it for the price of one readdir.
 
@@ -796,7 +1050,7 @@ def rung_activity(rung: Optional[Path]) -> Optional[Dict[str, Any]]:
     always outside the window by construction.
 
     KNOWN GAP, LEFT VISIBLY UNSOLVED. Corpus collection writes into a SIBLING
-    of the rung - `gauntlet-data/{size}` - not into the rung itself, and
+    of the run - `gauntlet-data/{size}` - not into the run itself, and
     `data_root` sits in the writer's `_FINGERPRINT_EXCLUDE`, so `resolved`
     cannot tell Theatre where that directory went. A long shard scan therefore
     still reads as stalled here. That is a gap and not a bug, and it is left
@@ -806,9 +1060,9 @@ def rung_activity(rung: Optional[Path]) -> Optional[Dict[str, Any]]:
     lstat, not stat: a symlinked child must not send this off following a link
     to an NFS mount to answer a question about local churn.
     """
-    if rung is None:
+    if run is None:
         return None
-    path = Path(rung)
+    path = Path(run)
     reading: Dict[str, Any] = {"role": ARTIFACTS_ROLE, "path": str(path),
                                "exists": False, "mtime": None, "size": None,
                                "since": None, "entries": 0}
@@ -838,7 +1092,7 @@ def rung_activity(rung: Optional[Path]) -> Optional[Dict[str, Any]]:
 
 def activity_files(launch: Optional[Dict[str, Any]],
                    logs: List[RunLog],
-                   rung: Optional[Path] = None) -> List[Dict[str, Any]]:
+                   run: Optional[Path] = None) -> List[Dict[str, Any]]:
     """The files whose mtimes bear on whether anything is still happening.
 
     Reuses read_launch's per-file machinery rather than growing a second one -
@@ -852,13 +1106,13 @@ def activity_files(launch: Optional[Dict[str, Any]],
     run, and reading a finished run's log as evidence about this one is the
     cross-attribution mistake this module refuses to make everywhere else.
 
-    THE RUNG DIRECTORY IS THE THIRD SOURCE, and it is the one that covers the
-    hand-run case the other two miss entirely - see rung_activity. It is kept
+    THE RUN DIRECTORY IS THE THIRD SOURCE, and it is the one that covers the
+    hand-run case the other two miss entirely - see run_activity. It is kept
     as its OWN reading under its own role rather than folded into "the log",
     because "artifacts written 14s ago" and "the log wrote 14s ago" are
     different sentences and only one of them is true when there is no log.
 
-    `rung` is optional so a caller with no rung in hand - and every existing
+    `run` is optional so a caller with no run in hand - and every existing
     one - gets exactly the two readings it always got.
     """
     out: List[Dict[str, Any]] = []
@@ -874,7 +1128,7 @@ def activity_files(launch: Optional[Dict[str, Any]],
             continue
         seen.add(entry.path)
         out.append(_file_activity(entry.path, "log"))
-    artifacts = rung_activity(rung)
+    artifacts = run_activity(run)
     if artifacts is not None and artifacts["path"] not in seen:
         seen.add(artifacts["path"])
         out.append(artifacts)
@@ -938,10 +1192,41 @@ def activity_state(manifest_state: str,
     return "running" if quiet.get("recent_write") else "stalled"
 
 
-def run_started(rung: Dict[str, Any]) -> float:
+#: The one run state that means "nothing to do here" - see scan_stage. Spelled
+#: once so the stage rule and the count cannot drift from each other.
+FINISHED = "finished"
+
+
+def _run_state(run: Dict[str, Any]) -> str:
+    """This run's one-word state, preferring the reading the scan settled on.
+
+    `scan_stage` may have downgraded `stalled` to `running` after looking at
+    file activity, and that verdict is the better one - so it wins over the raw
+    manifest word when it is there. An uninstrumented run has no state at all,
+    and "" is a real answer: it is not finished, so it stays on the stage.
+    """
+    if run.get("state"):
+        return str(run["state"])
+    found = run.get("manifest") or {}
+    return str(found.get("state") or "")
+
+
+def _wants_the_stage(run: Dict[str, Any]) -> bool:
+    """Is there something to do about this run?
+
+    Everything except a clean finish. Note which way this fails: an unknown or
+    missing state stays ON the stage, because a run this code cannot classify
+    is exactly the one a person should be looking at. Hiding it silently would
+    be the same failure as the empty state that used to say "No runs here yet"
+    over a stage with four archived builds in it.
+    """
+    return _run_state(run) != FINISHED
+
+
+def run_started(run: Dict[str, Any]) -> float:
     """When this run began: manifest `started` first, directory mtime after."""
-    found = rung.get("manifest") or {}
-    for value in (found.get("started"), rung.get("mtime")):
+    found = run.get("manifest") or {}
+    for value in (found.get("started"), run.get("mtime")):
         try:
             stamp = float(value)
         except (TypeError, ValueError):
@@ -951,21 +1236,141 @@ def run_started(rung: Dict[str, Any]) -> float:
     return 0.0
 
 
-def order_rungs(rungs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def order_runs(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Newest run first. Name breaks ties, so the answer is the same twice.
 
     Determinism is not a nicety here: a viewer that shows a different run as
     "current" on two boxes reading the same directory is worse than one that
     shows the wrong one consistently, because nobody can reproduce it.
     """
-    return sorted(rungs, key=lambda r: (run_started(r), str(r.get("name"))),
+    return sorted(runs, key=lambda r: (run_started(r), str(r.get("name"))),
                   reverse=True)
 
 
+def builder_path(local: Any, root: Path, remote_prefix: str) -> str:
+    """`local` as the BUILDER spells it. Unchanged when the stage is local.
+
+    ONE FUNCTION, because the alternative is two: the same mapping is needed
+    when a run is scanned and when an archived row is rendered, and a second
+    implementation of a path rewrite is a second set of edge cases.
+
+    For the person who reads a card and then goes to ssh at the box. The mount
+    path is a fact about Theatre's filesystem; the builder-side path is the one
+    that is true over there, and it is also the one that survives the mount
+    moving.
+
+    A path that does not sit under this stage comes back UNTOUCHED rather than
+    force-fitted. Guessing would produce a confident path to nowhere, which is
+    worse than the honest original - and it happens legitimately, for a row
+    harvested before the stage root was changed.
+    """
+    text = str(local or "")
+    if not remote_prefix or not text:
+        return text
+    try:
+        rest = Path(text).relative_to(root)
+    except ValueError:
+        return text
+    return str(Path(remote_prefix) / rest)
+
+
+def local_path(builder: Any, root: Path, remote_prefix: str) -> str:
+    """A path the BUILDER named, as this box can open it. The inverse.
+
+    THE DIRECTION THAT WAS MISSING. `builder_path` exists so a person reading an
+    archived row knows what to type once they ssh over. This one is for the
+    opposite moment: the builder just announced an absolute path in its own
+    filesystem, and Theatre has to find that directory under a mount.
+
+    Not folded into one function with a flag. A flag would make every call site
+    read as "translate, somehow", and the two directions fail differently - the
+    forward one is cosmetic if it is wrong, this one silently fails to match a
+    run and the launch link just never appears.
+
+    A path that is not under the declared prefix comes back UNTOUCHED, which is
+    also the whole behaviour for a local stage. Guessing is worse than the
+    original: a forced path would be confidently wrong and would match nothing.
+    """
+    text = str(builder or "")
+    if not remote_prefix or not text:
+        return text
+    try:
+        rest = Path(text).relative_to(Path(remote_prefix))
+    except ValueError:
+        return text
+    return str(root / rest)
+
+
+# ── what the BUILD said about itself ────────────────────────────────────────
+#
+# The events JSONL's `started` object, which ms-moe-maker publishes the keys of
+# under `started_fields`. It is the ONLY place a build states its own absolute
+# run directory: the manifest deliberately carries none, because `Stage.artifact`
+# is relative precisely so a run directory survives being moved, copied to
+# another box, or read through a mount with a different prefix.
+#
+# So this is the single bridge between "the process stagehand launched" and "the
+# directory on disk", and until now Theatre walked right past it -
+# stagehand._last_error_event opens this exact file, keeps `event == "error"`,
+# and drops the other nine fields of the launch's own account of itself.
+#
+# NAMED HERE RATHER THAN IMPORTED, on the same bargain manifest.py takes with
+# msmoe-run.json and read_launch takes with the marker: sources.py is on the
+# viewer's import graph and stagehand deliberately is not. A contract test
+# asserts the names still agree with the writer's published card.
+STARTED_EVENT = "started"
+
+#: Bounded like the marker's own event read, and for the same reason: a build
+#: that ran for nine hours has a large events file and a dashboard must never be
+#: the reason the box is busy. The `started` object is the FIRST line of that
+#: file, so a small head read finds it - unlike the last error, which needs the
+#: tail. Generous enough that a fat `resolved` block cannot push it out of reach.
+STARTED_MAX_BYTES = 256 * 1024
+
+
+def read_started(path: Any) -> Optional[Dict[str, Any]]:
+    """The build's own `started` object, or None. Never raises.
+
+    None means THE BUILD SAID NOTHING STRUCTURED - an older ms-moe-maker, a
+    build run by hand without `--json`, a file that has not been written yet.
+    That is a real answer and the caller renders it as one; it must never become
+    an empty dict a reader mistakes for "started, with nothing in it".
+
+    READ FROM THE HEAD, first match wins. `started` is emitted before anything
+    else, so the front of the file is where it is - and taking the FIRST rather
+    than the last is deliberate: stagehand stamps a fresh events file per
+    launch, so a second `started` in one file would mean somebody appended two
+    runs, and the earlier one is the one this file's marker describes.
+
+    Lines that do not parse are skipped rather than repaired, because the tail
+    of a bounded read is a fragment and a half-read event is not an event.
+    """
+    if not path:
+        return None
+    try:
+        with open(str(path), "rb") as fh:
+            blob = fh.read(STARTED_MAX_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return None
+    for line in blob.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("event") == STARTED_EVENT:
+            return row
+    return None
+
+
 def scan_stage(name: str, root: Path, log_globs: List[str],
-               rung_globs: List[str], limit: int) -> Dict[str, Any]:
+               run_globs: Sequence[str], limit: int,
+               run_depth: int = RUN_DEPTH_DEFAULT,
+               remote_prefix: str = "") -> Dict[str, Any]:
     logs: List[RunLog] = []
-    rungs: List[Dict[str, Any]] = []
+    runs: List[Dict[str, Any]] = []
     if root.is_dir():
         seen: set[Path] = set()
         for pattern in log_globs:
@@ -973,35 +1378,30 @@ def scan_stage(name: str, root: Path, log_globs: List[str],
                 if p.is_file() and p not in seen:
                     seen.add(p)
                     logs.append(parse_run_log(p, limit))
-        # DEDUPED, LIKE THE LOGS ABOVE. This loop was not, and the asymmetry
-        # was the tell: somebody wrote the guard for logs and not for rungs.
-        #
-        # OVERLAPPING GLOBS ARE THE NORMAL CASE, not a misconfiguration. A
-        # perfectly sensible list - `msmoe_*` for everything plus `msmoe_run_*`
-        # spelled out because that is what the default roots produce - matches
-        # msmoe_run_0.5B twice, and the rung was then SCANNED twice and
-        # rendered twice.
-        #
-        # Not merely cosmetic, three ways over: scan_rung is the expensive call
-        # (manifest, eval report, gate report, a directory stat), `earlier`
-        # counts one phantom run per duplicate, and harvest is handed the same
-        # rung twice. None of that announces itself - it looks like a stage
-        # that genuinely has two runs with the same name.
-        rung_seen: set[Path] = set()
-        for pattern in rung_globs:
-            for p in sorted(root.glob(pattern)):
-                # is_dir AND looks_like_rung. The glob proposes; the directory
-                # decides. See looks_like_rung.
-                if p in rung_seen:
-                    continue
-                if p.is_dir() and looks_like_rung(p):
-                    rung_seen.add(p)
-                    rungs.append(scan_rung(p))
+        # WHICH DIRECTORIES ARE RUNS is resolve_runs' question, not this
+        # one's - the same answer the eval endpoint gets, deduped there. The
+        # duplicate-scan guard that used to live here moved with the loop; see
+        # resolve_runs for why overlapping globs are the normal case.
+        for p in resolve_runs(root, run_globs, max_depth=run_depth):
+            found = scan_run(p)
+            # THE FRAME TRAVELS WITH THE RUN, because harvest is downstream of
+            # this and has no access to the config. Stamped even when empty so
+            # the key always exists: a consumer that has to tell "local" from
+            # "this scanner is too old to say" is back to guessing.
+            found["remote_prefix"] = remote_prefix
+            # AND THE TRANSLATED PATH, computed HERE because this is the only
+            # place both halves exist at once. Deriving it later from the row
+            # is impossible: the row keeps the prefix but not the stage root it
+            # was stripped against, and today's config is a statement about now
+            # rather than about the run.
+            found["builder_path"] = builder_path(found.get("path"), root,
+                                                 remote_prefix)
+            runs.append(found)
     logs.sort(key=lambda r: r.mtime, reverse=True)
     # WHAT WAS LAUNCHED FROM HERE, if anything. At STAGE level because that is
     # where stagehand drops the marker - beside the log and events files, in the
     # cwd it was handed - and because a launch that died on arrival produces no
-    # rung directory at all, so a rung-level seat would be empty in exactly the
+    # run directory at all, so a run-level seat would be empty in exactly the
     # case that matters most. Same lenient read as the manifest: a missing,
     # unreadable or ancient marker degrades to a reported error and nothing else
     # on this dict changes. It is a record of a START and never a second opinion
@@ -1009,7 +1409,7 @@ def scan_stage(name: str, root: Path, log_globs: List[str],
     launch, launch_error = read_launch(root)
 
     # ONE RUN PER STAGE ON SCREEN - the current one, or the most recent - and
-    # EVERY run still in the payload. A gauntlet leaves a rung directory per
+    # EVERY run still in the payload. A gauntlet leaves a run directory per
     # size and the room rendered all of them, every stage of every one, which
     # is the opposite of the brief: you glance at it, you learn where the run
     # is, you look away.
@@ -1018,14 +1418,14 @@ def scan_stage(name: str, root: Path, log_globs: List[str],
     # about which run is current. `earlier` is a COUNT and not a deletion: a
     # viewer that silently drops data is the exact failure this file keeps
     # fixing, and the count is also the seam a Previous Shows section lands on.
-    rungs = order_rungs(rungs)
+    runs = order_runs(runs)
 
     # The log and events files sit at STAGE level - beside the marker, in the
     # cwd the build was launched in - so this evidence belongs to the run that
     # is happening NOW and is attached to that one alone. Hanging a live log's
-    # mtime on a rung that finished last Tuesday would be inventing a reading.
-    if rungs:
-        current = rungs[0]
+    # mtime on a run that finished last Tuesday would be inventing a reading.
+    if runs:
+        current = runs[0]
         found = current.get("manifest")
         if found is not None:
             quiet = quiet_reading(found.get("updated"),
@@ -1040,9 +1440,73 @@ def scan_stage(name: str, root: Path, log_globs: List[str],
                 "manifest" if current["state"] == found.get("state")
                 else "manifest + file activity")
 
+    # ── WHAT BELONGS ON THE STAGE, decided here and not in the browser ──
+    #
+    # A stage holds the run there is something to DO about. You glance at it
+    # and learn one of three things: something is cooking, something stopped
+    # badly, or nothing is happening - and the third of those is not the same
+    # sentence as "nothing was ever built here" - which is what it used to say.
+    #
+    # `finished` is the ONLY state that comes off the stage. Everything else is
+    # unresolved business and stays: `running` and `idle` are cooking,
+    # `stalled` is the one you most want to see, and `failed` is the whole
+    # reason a person looks. A clean finish is not news - it is history, and
+    # history has a tab.
+    #
+    # DECIDED SERVER-SIDE for the reason activity_state already gives one
+    # function up: two implementations of "is this run over" would eventually
+    # disagree, and they would disagree on screen. The browser gets a verdict,
+    # not the ingredients for a second one.
+    # ── WHICH RUN IS THE ONE STAGEHAND LAUNCHED ────────────────────────────
+    #
+    # Until the build's `started` event was read, nothing connected the two.
+    # The marker sits at STAGE level - stagehand drops it in the cwd it was
+    # handed, beside the log - and runs are discovered independently by walking
+    # the directory. So "the thing I started" and "the thing on disk" were two
+    # unrelated facts on one card, and the stage picked its run by ORDER: newest
+    # wins. That is a heuristic, and it is wrong in the case a person most cares
+    # about - a hand-run build finishing while a launched one is still going
+    # makes the hand-run one newest and puts it on the stage.
+    #
+    # With a run directory the link is an IDENTITY instead. Translated through
+    # the stage's mount prefix, because the builder named a path in its own
+    # filesystem and this box may see it somewhere else entirely.
+    launched_at = ""
+    if isinstance(launch, dict):
+        said = launch.get("run") or {}
+        launched_at = local_path(said.get("run_dir"), root, remote_prefix)
+        if launched_at:
+            launch["run_path"] = launched_at
+    launched = None
+    for run in runs:
+        run["launched"] = bool(launched_at) and \
+            str(run.get("path") or "") == launched_at
+        if run["launched"]:
+            launched = run
+
+    # THE LAUNCHED RUN WINS THE STAGE, unless it is over. `finished` is still
+    # the only state that comes off the stage, so a launch whose run completed
+    # hands the stage back rather than pinning a done card there forever - and
+    # with nothing launched, or a launch Theatre cannot locate, this is exactly
+    # the previous newest-wins rule. Strictly better-informed, never different
+    # when there is no better information.
+    if launched is not None and _wants_the_stage(launched):
+        on_stage = launched
+    else:
+        on_stage = runs[0] if runs and _wants_the_stage(runs[0]) else None
     return {"name": name, "path": str(root), "exists": root.is_dir(),
-            "logs": [asdict(r) for r in logs], "rungs": rungs,
-            # Which of `rungs` is the one on stage, and how many are behind it.
-            "current": rungs[0]["path"] if rungs else None,
-            "earlier": max(0, len(rungs) - 1),
+            "logs": [asdict(r) for r in logs], "runs": runs,
+            # Which of `runs` is newest, and how many are behind it. Kept as
+            # an honest inventory: harvest reads every one of these, so a
+            # viewer-facing decision must never shorten the list.
+            "current": runs[0]["path"] if runs else None,
+            "earlier": max(0, len(runs) - 1),
+            # The one the stage draws, or None. A separate key rather than a
+            # redefinition of `current`, because quietly changing what an
+            # existing field means is how a reader ends up confidently wrong.
+            "on_stage": on_stage,
+            # How many runs THIS SCAN found that are simply done. The number a
+            # person needs to tell "nothing cooking" from "nothing here".
+            "finished_here": sum(1 for r in runs
+                                 if _run_state(r) == FINISHED),
             "launch": launch, "launch_error": launch_error}

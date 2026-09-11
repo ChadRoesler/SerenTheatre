@@ -36,7 +36,7 @@ def run(resolved, *, enrichment=None, reasoned=None, build="b1",
         knobs=KNOBS, evaluated=True, name="dryrun"):
     """An archived surgery row, shaped exactly as the store returns one."""
     row = {"run_key": f"{name}-{build}", "name": name, "build_id": build,
-           "started": 1.0, "state": "finished", "ok": 1, "rung_present": 1,
+           "started": 1.0, "state": "finished", "ok": 1, "run_present": 1,
            "manifest": {"build_id": build, "resolved": dict(resolved),
                         "knobs": knobs},
            "gradings": [], "gate": None}
@@ -322,3 +322,43 @@ def test_comparing_stays_a_read_route(tmp_path):
     app = create_app(cfg)
     assert "/api/archive/diff" in {getattr(r, "path", None) for r in app.routes}
     assert "/api/archive/diff" not in {p for p, _ in mutating_routes(app)}
+
+
+class TestPresenceReachesTheComparePanel:
+    """The three-state presence has to survive into `_side`, or this surface
+    quietly re-introduces the false alarm the state was added to remove.
+
+    Found by reading the renderer rather than by a failing test: the surgeries
+    list reads `run_state`, the compare panel reads the same expression, and
+    `_side` was handing it only the derived boolean - so an unreachable run was
+    drawn in this panel as a deletion. A derived boolean looks complete on its
+    own, which is exactly why it needs a test naming the other field.
+    """
+
+    def row(self, **over):
+        base = {"run_key": "k", "name": "n", "build_id": "b",
+                "started": 1.0, "state": "finished", "stage": "s", "ok": 1,
+                "run_present": 0, "run_state": "unknown", "manifest": {}}
+        base.update(over)
+        return base
+
+    def test_the_state_is_passed_through_not_just_the_boolean(self):
+        from seren_theatre.archive import compare as cmp
+        side = cmp._side(self.row())
+        assert side["run_state"] == "unknown", (
+            "the compare panel reads run_state and falls back to the boolean "
+            "when it is absent - so omitting it here renders an unreachable "
+            "run as 'archived only', which is the false deletion alarm again")
+
+    def test_an_unreachable_run_is_not_reported_as_gone(self):
+        from seren_theatre.archive import compare as cmp
+        got = cmp.compare(self.row(), self.row(run_key="j"))
+        assert got["a"]["run_state"] == "unknown"
+        assert got["b"]["run_state"] == "unknown"
+
+    def test_a_row_with_no_state_still_answers(self):
+        """Older archives have no column; the key must exist and be empty."""
+        from seren_theatre.archive import compare as cmp
+        side = cmp._side(self.row(run_state=None))
+        assert side["run_state"] == ""
+

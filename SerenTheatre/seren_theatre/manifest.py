@@ -40,6 +40,13 @@ from typing import Any, Dict, List, Optional
 
 # Pinned against ms_moe_maker.manifest by tests/test_manifest_contract.py.
 MANIFEST_NAME = "msmoe-run.json"
+
+#: THE RUN'S OWN COPY OF THE RECIPE THAT PRODUCED IT, beside the manifest.
+#: Stem only - the suffix is whatever the original file had, so a JSON recipe
+#: stays `.json`. Also pinned by the contract test: a viewer looking for the
+#: wrong name would report every run as having no recipe, which is the same
+#: silent-miss shape as looking for the wrong manifest name.
+RECIPE_STEM = "msmoe-recipe"
 SCHEMA_VERSION = 1
 STALE_AFTER_SECONDS = 15 * 60
 
@@ -235,6 +242,25 @@ class Manifest:
         if self.running is not None:
             return "running"
         return "idle"
+
+
+def find_recipe(run_dir: Path) -> Optional[Path]:
+    """This run's preserved recipe, whatever suffix it kept. None if absent.
+
+    None is a real answer and stays distinguishable from an empty file: a run
+    built before ms-moe-maker preserved recipes has nothing here, and that is a
+    different fact from a recipe that was written and came back blank. The
+    caller decides which of those is worth surfacing - this only reports.
+
+    Second implementation of a name ms-moe-maker owns, same bargain as the rest
+    of this module: importing the writer would make a viewer depend on a
+    training pipeline, so both ends spell it and a contract test compares them.
+    """
+    try:
+        found = sorted(Path(run_dir).glob(RECIPE_STEM + ".*"))
+    except OSError:
+        return None
+    return found[0] if found else None
 
 
 def read(run_dir: Path) -> Optional[Manifest]:

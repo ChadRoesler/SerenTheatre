@@ -52,6 +52,11 @@ import time
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+# ONE DEFINITION OF WHAT A COMMAND STRING MEANS. See config.as_argv: the
+# reading end has to coerce too, because list() on a bare string yields
+# its characters and every caller predating the argv field passes one.
+from .config import as_argv as _as_argv
+
 # The literal command from ms-moe-maker's README. Quoted as data so the test that
 # asserts we run exactly this has something to compare against.
 MS_MOE_COMMAND = "ms-moe-maker"
@@ -168,8 +173,47 @@ def resolve() -> Resolution:
     prevent, and the person would see a working form describing the wrong box.
     """
     cfg = _PIPELINE
-    if cfg is not None and getattr(cfg, "command", ""):
-        raw = os.path.expanduser(cfg.command)
+    configured = _as_argv(getattr(cfg, "command", None)) if cfg is not None else []
+
+    # ── argv: a command whose first word is a LAUNCHER ──────────────────────
+    #
+    # `["ssh", "spark128gb", "/mnt/nvme/msMoEMaker/bin/ms-moe-maker"]`. The
+    # trailing path is on ANOTHER BOX, so the single-path branch below - which
+    # earns its trust by calling is_file() - cannot say anything true about it.
+    # Verifying only what is local and passing the rest through verbatim is the
+    # honest split, and it is why this is a separate branch rather than a loop
+    # over the same checks.
+    #
+    # NOTHING PAST argv[0] IS EXPANDED. `~` in a remote argument is the remote
+    # user's home, and expanding it here would substitute THIS box's home into
+    # a path interpreted on another one - a wrong path that looks deliberate.
+    #
+    # AND THERE IS NO FALLBACK HERE, FOR A SHARPER REASON THAN USUAL. Dropping
+    # back to PATH when a launcher is missing would run the build LOCALLY while
+    # the operator believes it is running on the box they named: the same class
+    # of error as describing the wrong install, except it also spends nine hours
+    # and fills the wrong disk.
+    if len(configured) > 1:
+        launcher = os.path.expanduser(configured[0])
+        named_a_path = os.sep in launcher or (os.altsep and os.altsep in launcher)
+        if Path(launcher).is_file():
+            return Resolution([launcher] + configured[1:],
+                              "pipeline.command (argv)")
+        if not named_a_path:
+            found = shutil.which(launcher)
+            if found:
+                return Resolution([found] + configured[1:],
+                                  "pipeline.command (argv, launcher on PATH)")
+        return Resolution(error=(
+            f"pipeline.command starts with {configured[0]!r} and there is no "
+            f"such {'file' if named_a_path else 'command'} on this box. "
+            f"Theatre will not fall back to a local ms-moe-maker: you asked "
+            f"for a build launched through {configured[0]!r}, and running it "
+            f"here instead would put the run on the wrong machine while "
+            f"reporting success."))
+
+    if configured:
+        raw = os.path.expanduser(configured[0])
         # A PATH SEARCH ONLY FOR A BARE NAME, and the distinction is not
         # pedantry - it was a live hole, caught by the test written to forbid
         # exactly this. `command: ms-moe-maker` means "the one on PATH" and
@@ -187,7 +231,8 @@ def resolve() -> Resolution:
             if found:
                 return Resolution([found], "pipeline.command (found on PATH)")
         return Resolution(error=(
-            f"pipeline.command is set to {cfg.command!r} and there is no such "
+            f"pipeline.command is set to {configured[0]!r} and there is no "
+            f"such "
             f"{'file' if named_a_path else 'command'}. Theatre will not fall "
             f"back to PATH here: falling back is the behaviour this setting "
             f"exists to prevent, and it would describe a different install "
@@ -621,7 +666,7 @@ def run_detached(recipe: Path, *, cwd: Path, log_file: Optional[Path] = None,
     A build is hours. Theatre restarts - a config change, a service bounce, an
     upgrade - and a run started from Backstage must not die because the viewer
     that launched it went away. That is the same reasoning as run-msmoe.sh's
-    --detach flag, which exists because "don't let that be how a 14B rung ends"
+    --detach flag, which exists because "don't let that be how a 14B run ends"
     was written after it nearly was.
 
     So: new session/process group, and no wait FOR THE RUN. The parent forgets

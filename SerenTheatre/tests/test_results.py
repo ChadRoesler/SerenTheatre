@@ -2,7 +2,7 @@
 
 Everything here is one of two failures wearing different clothes:
 
-  * A NUMBER THAT IS NOT ABOUT WHAT THE READER THINKS. A rebuilt rung keeps its
+  * A NUMBER THAT IS NOT ABOUT WHAT THE READER THINKS. A rebuilt run keeps its
     old eval report - valid JSON, confident numbers, a model that no longer
     exists - and rendering it plainly is the C# 0/10 failure in a new coat.
   * AN ABSENCE RENDERED AS A ZERO. "Not measured" and "measured, scored zero"
@@ -11,6 +11,7 @@ Everything here is one of two failures wearing different clothes:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -66,7 +67,7 @@ def test_provenance_has_three_answers_and_unknown_is_one_of_them(
     assert rr.provenance(report_id, manifest_id) == expected
 
 
-def test_a_rebuilt_rung_reports_its_old_eval_as_stale(tmp_path):
+def test_a_rebuilt_run_reports_its_old_eval_as_stale(tmp_path):
     _write(tmp_path, rr.EVAL_REPORT_NAME,
            {"build_id": "old111", "ok": True, "stages": {}})
     got = rr.read_eval(tmp_path, "new222")
@@ -231,100 +232,132 @@ def test_a_garbled_top_level_is_refused_not_coerced(tmp_path):
 # `find()` has never once been called by anything. Testing read_eval alone
 # would have passed for that reader too, every day, for its whole life.
 #
-# So these go through scan_rung - the call the web app actually makes.
+# So these go through scan_run - the call the web app actually makes.
 
 from seren_theatre import sources                                  # noqa: E402
 
 
-def _rung(tmp_path):
+def _run(tmp_path):
     d = tmp_path / "msmoe_run_0.5B"
     d.mkdir()
     return d
 
 
-def test_scan_rung_surfaces_an_eval_report(tmp_path):
-    d = _rung(tmp_path)
+def test_scan_run_surfaces_an_eval_report(tmp_path):
+    d = _run(tmp_path)
     _write(d, rr.EVAL_REPORT_NAME,
            {"ok": True, "build_id": "b1", "stages": {"py": {"exact_match": 0.5}}})
-    out = sources.scan_rung(d)
+    out = sources.scan_run(d)
     assert out["eval"] is not None, (
         "the reader works and the scanner never calls it, which renders an "
         "evaluated run as an un-evaluated one")
     assert out["eval"]["quality"][0]["exact_match"] == 0.5
 
 
-def test_scan_rung_surfaces_a_gate_report(tmp_path):
-    d = _rung(tmp_path)
+def test_scan_run_surfaces_a_gate_report(tmp_path):
+    d = _run(tmp_path)
     _write(d, rr.GATE_REPORT_NAME, {"status": "ok", "divergence": {"py": 0.03}})
-    out = sources.scan_rung(d)
+    out = sources.scan_run(d)
     assert out["gate"] is not None
     assert out["gate"]["divergence"]["py"] == 0.03
 
 
-def test_scan_rung_reports_a_broken_document_instead_of_crashing(tmp_path):
-    """One corrupt result file must not take the whole rung's card down.
+def test_scan_run_reports_a_broken_document_instead_of_crashing(tmp_path):
+    """One corrupt result file must not take the whole run's card down.
 
-    The rung still has a manifest, a log, artifacts and a state worth showing.
+    The run still has a manifest, a log, artifacts and a state worth showing.
     Losing all of it to a bad JSON blob would be the viewer punishing the
     reader for the pipeline's mess."""
-    d = _rung(tmp_path)
+    d = _run(tmp_path)
     (d / rr.EVAL_REPORT_NAME).write_text("{oops", encoding="utf-8")
-    out = sources.scan_rung(d)
+    out = sources.scan_run(d)
     assert out["eval"] is None
     assert "not valid JSON" in (out["eval_error"] or "")
     assert out["name"] == "msmoe_run_0.5B", "the rest of the reading survived"
 
 
-def test_scan_rung_hands_the_manifests_build_id_to_the_provenance_check(tmp_path):
+def test_scan_run_hands_the_manifests_build_id_to_the_provenance_check(tmp_path):
     """The staleness check is only as good as what it is given.
 
     If the scanner passes nothing, every eval reads `unknown` forever - which
     is not wrong, exactly, and is useless, which is worse: it looks like the
     feature works."""
     import json
-    d = _rung(tmp_path)
+    d = _run(tmp_path)
     (d / "msmoe-run.json").write_text(json.dumps({
         "schema_version": 1, "name": d.name, "build_id": "match-me",
         "stages": [], "started": 1.0, "updated": 2.0}), encoding="utf-8")
     _write(d, rr.EVAL_REPORT_NAME, {"ok": True, "build_id": "match-me"})
-    assert sources.scan_rung(d)["eval"]["provenance"] == rr.MATCHES
+    assert sources.scan_run(d)["eval"]["provenance"] == rr.MATCHES
 
     _write(d, rr.EVAL_REPORT_NAME, {"ok": True, "build_id": "some-other"})
-    assert sources.scan_rung(d)["eval"]["provenance"] == rr.STALE
+    assert sources.scan_run(d)["eval"]["provenance"] == rr.STALE
 
 
-def test_the_default_rung_globs_match_the_pipelines_default_output_dirs():
-    """A default that finds nothing looks exactly like an empty stage.
+def test_the_default_finds_a_run_whatever_its_directory_is_called(tmp_path):
+    """THE TEST THIS REPLACES COULD NOT HAVE CAUGHT THE BUG IT WAS FOR.
 
-    ms-moe-maker, left alone, writes to `msmoe_run_{size}` (or
-    `msmoe_dryrun_{size}`). The shipped globs were `dryrun_*` and `*_agent_*`,
-    which match NEITHER - so someone who installed both projects and changed
-    no config saw a stage with nothing in it and no hint that the viewer was
-    looking for directories with other names.
+    It asserted that the shipped globs matched the output directories somebody
+    had thought of - `msmoe_run_{size}` and friends - which pins a whitelist
+    against a list of names, and a whitelist is only ever wrong about the name
+    nobody listed. It passed for months and the failure it existed to prevent
+    happened twice anyway: once against a default that predated
+    `msmoe_run_*`, and once against `gauntlet-nano-runs/0.5B`, written by
+    someone who had read the config an hour earlier.
 
-    Kept as a test rather than a comment because the two defaults live in two
-    repositories and nothing else makes them meet.
+    So the invariant is no longer "the names we thought of are matched". It is
+    "the name does not matter", and it is checked by putting real directories
+    on disk with names nobody would have listed and asking with NO config at
+    all. `_run` builds them the way the pipeline does; discovery is expected
+    to find every one.
     """
-    from fnmatch import fnmatch
     from seren_theatre.config import StageConfig
 
-    globs = StageConfig(name="x", path="/x").rungs
-    for real in ("msmoe_run_0.5B", "msmoe_dryrun_0.5B", "msmoe_run_7B"):
-        assert any(fnmatch(real, g) for g in globs), (
-            f"{real} is what the pipeline creates by default and no shipped "
-            f"glob matches it")
+    stage = tmp_path / "workbench"
+    wanted = {
+        "msmoe_run_0.5B",              # the flat default
+        "msmoe_dryrun_0.5B",
+        "gauntlet-runs/0.5B",          # a `<name>/{size}` output root
+        "gauntlet-nano-runs/0.5B",     # the one a real whitelist missed
+        "a-name-nobody-would-whitelist/xyz",
+    }
+
+    def build(at: Path) -> None:
+        """A run the way the pipeline leaves one: a manifest from its first
+        second, and the artifacts that arrive later."""
+        at.mkdir(parents=True)
+        (at / "msmoe-run.json").write_text(
+            '{"schema_version": 1, "name": "r", "stages": [], '
+            '"started": 1.0, "updated": 2.0}', encoding="utf-8")
+        art = at / "moe_trained"
+        art.mkdir()
+        (art / "config.json").write_text("{}", encoding="utf-8")
+
+    # noqa-free spacing: a nested def wants a blank line before it.
+    for rel in wanted:
+        build(stage / rel)
+
+    # A neighbour that is NOT a run, to prove discovery is still narrow.
+    (stage / "shard_cache").mkdir(parents=True, exist_ok=True)
+    (stage / "shard_cache" / "shard-0.jsonl").write_text("x", encoding="utf-8")
+
+    globs = StageConfig(name="x", path=str(stage)).runs
+    assert globs == [], "the default is now discovery, not a whitelist"
+
+    found = sources.resolve_runs(stage, globs)
+    assert {p.relative_to(stage).as_posix() for p in found} == wanted
 
 
-def test_a_corpus_directory_still_does_not_render_as_a_rung(tmp_path):
+def test_a_corpus_directory_still_does_not_render_as_a_run(tmp_path):
     """The broad glob is safe because the predicate is narrow.
 
     `msmoe_*` also catches `msmoe_data`, the shared corpus root, which is not a
-    run and never will be. looks_like_rung asks what the directory IS rather
+    run and never will be. looks_like_run asks what the directory IS rather
     than what its name looks like - written after `dryrun_data` rendered as an
-    empty rung card reading 'Nothing built here yet', a true sentence about a
+    empty run card reading 'Nothing built here yet', a true sentence about a
     directory that was never going to have anything built in it.
     """
     corpus = tmp_path / "msmoe_data"
     corpus.mkdir()
     (corpus / "python.jsonl").write_text('{"text":"x"}\n', encoding="utf-8")
-    assert not sources.looks_like_rung(corpus)
+    assert not sources.looks_like_run(corpus)

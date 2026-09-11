@@ -19,14 +19,14 @@ on one small file is how a manifest gets truncated at 3am.
 So each result drops its own document in the run directory and a reader finds
 it by scanning, exactly the way the GGUF and the smoke-pass marker are found.
 The upside is bigger than the avoided bug: an eval run from ANOTHER BOX, days
-later, against the same rung, shows up in this viewer with nothing wired.
+later, against the same run, shows up in this viewer with nothing wired.
 ────────────────────────────────────────────────────────────────────────────
 
 THE ONE THING THIS FILE MUST NEVER DO
 
 Show a stale eval as though it described the model currently on disk.
 
-A rung gets rebuilt. The eval report from before the rebuild sits there, still
+A run gets rebuilt. The eval report from before the rebuild sits there, still
 valid JSON, still full of confident numbers about a model that no longer
 exists. Rendering it beside the new build's playbill is not a small cosmetic
 error - it is the C# 0/10 failure in a new costume: nothing looks wrong, and
@@ -113,7 +113,7 @@ def _load(path: Path) -> Optional[Dict[str, Any]]:
 # ── the eval report ──────────────────────────────────────────────────────────
 
 def read_eval(run_dir: Path, manifest_build_id: str = "") -> Optional[Dict[str, Any]]:
-    """Read a rung's eval report off disk and project it. None if never run."""
+    """Read a run's eval report off disk and project it. None if never run."""
     path = Path(run_dir) / EVAL_REPORT_NAME
     data = _load(path)
     if data is None:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -112,9 +113,29 @@ async def _updates_block(app: FastAPI) -> dict:
             "checked_at": None}
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Nothing on the way in; close the archive on the way out.
+
+    See the note beside `_archive()` for why closing matters: the archive is a
+    WAL database whose connection lives as long as the process, so without this
+    the main file on disk stays a stub and a plain file copy of it is empty.
+
+    Lifespan rather than `@app.on_event`, which FastAPI 0.141 deprecates. Note
+    that `TestClient(app)` only runs this when used as a context manager, which
+    is why the test for it says `with`.
+    """
+    yield
+    found = getattr(app.state, "archive", None)
+    if found is not None:
+        found.close()
+        app.state.archive = None
+
+
 def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
     cfg = config or load_config()
-    app = FastAPI(title="SerenTheatre", version=APP_VERSION)
+    app = FastAPI(title="SerenTheatre", version=APP_VERSION,
+                  lifespan=_lifespan)
     app.state.cfg = cfg
 
     # -- Bearer auth --
@@ -276,6 +297,27 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
             diag(f"[seren-theatre] {app.state.archive_error}")
         return app.state.archive
 
+    # ── CLOSE IT ON THE WAY OUT, and this is not tidiness ────────────────
+    #
+    # The archive runs in WAL mode and holds its connection for the life of the
+    # process, so committed rows sit in `<name>-wal` until something
+    # checkpoints. Nothing did: no autocheckpoint is configured, and sqlite only
+    # folds the log back on its own when the LAST connection closes. Observed on
+    # a real box after a week of builds - `archive.db` 4 KB, `archive.db-wal`
+    # 383 KB, main file untouched for eight days.
+    #
+    # Every query answered correctly the whole time, which is why nobody
+    # noticed. What was broken was `cp archive.db /somewhere/safe`, which
+    # produces a file that opens, carries the right name and holds NOTHING,
+    # schema included. See Archive.checkpoint.
+    #
+    # A SIGKILL still leaves a WAL behind and that is fine - the next opener
+    # recovers it. This is about the file being honest whenever Theatre stops
+    # the way it normally stops.
+    # The handler itself is module-level `_lifespan`, wired at construction -
+    # `@app.on_event` is deprecated in FastAPI 0.141 and shipping 194
+    # DeprecationWarnings into a stranger's test run is its own small papercut.
+
     def _harvest(stages) -> dict:
         """Copy finished runs into the archive. A READ that writes, on purpose.
 
@@ -301,9 +343,24 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
         stored = 0
         error = ""
         try:
+            from .archive import blobs as _blobs_mod
             from .archive import harvest as _harvest_mod
+            # THE BLOB STORE IS PASSED, and passing it is the whole reason the
+            # recipe reaches the archive at all. Built here rather than held on
+            # app.state because it is a path and a hash function - there is no
+            # connection to keep, and a cached one would only be a chance for
+            # the configured directory to change under it.
+            #
+            # If it cannot be built the harvest still runs: the manifest is the
+            # record and refusing to keep it because the recipe cannot be stored
+            # would trade the whole feature for part of it. The row says which
+            # happened - see harvest.capture_recipe.
+            try:
+                store = _blobs_mod.Blobs(cfg.archive.blobs_dir())
+            except Exception:           # noqa: BLE001
+                store = None
             for stage in stages:
-                stored += _harvest_mod.harvest_stage(archive, stage)
+                stored += _harvest_mod.harvest_stage(archive, stage, store)
         except Exception as exc:        # noqa: BLE001
             # A HARVEST THAT FAILS MUST NOT COST YOU THE DASHBOARD. Watching a
             # run has never required being able to archive one, and a full disk
@@ -321,8 +378,9 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
     @app.get("/api/state")
     def state() -> dict:
         t0 = time.time()
-        stages = [scan_stage(s.name, s.resolved(), s.logs, s.rungs,
-                             cfg.tail_bytes)
+        stages = [scan_stage(s.name, s.resolved(), s.logs, s.runs,
+                             cfg.tail_bytes, run_depth=s.run_depth,
+                             remote_prefix=s.remote_prefix)
                   for s in cfg.stages]
         return {"generated": t0, "took_ms": round((time.time() - t0) * 1000, 1),
                 "refresh_seconds": cfg.refresh_seconds, "stages": stages,
@@ -431,10 +489,16 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
             from .archive import harvest as _harvest_mod
             rows = archive.surgeries(limit=max(1, min(limit, 500)),
                                      offset=max(0, offset))
-            # STAT THEM NOW. A stored `rung_present` is a last-known value, and
-            # the row that matters most - the one whose rung was deleted - is
+            # STAT THEM NOW. A stored `run_present` is a last-known value, and
+            # the row that matters most - the one whose run was deleted - is
             # exactly the one no later harvest will ever revisit. See reconcile.
-            rows = _harvest_mod.reconcile(archive, rows)
+            # ANCHORED, and the anchors are what let a row say `unknown`.
+            # Without them a missing directory can only read as deleted, and
+            # the rows most likely to be missing are the ones on a builder that
+            # was retired or a share that is down - so the unanchored answer is
+            # wrong in the loud direction on exactly the rows that matter.
+            rows = _harvest_mod.reconcile(
+                archive, rows, _harvest_mod.anchors_for(cfg.stages))
             # RE-PROJECT THE STORED DOCUMENTS. The rows carry the ORIGINAL
             # eval and gate reports; the shape the viewer draws is computed
             # here, from them, on every read. That is what makes a viewer
@@ -452,7 +516,7 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
                         # against the manifest that was on disk then, and that
                         # is the only moment the question had one honest
                         # answer. Re-deriving it now would compare against a
-                        # rung that may since have been rebuilt.
+                        # run that may since have been rebuilt.
                         view["provenance"] = grading.get("provenance") \
                             or view["provenance"]
                         grading["view"] = view
@@ -502,8 +566,62 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
                     view["provenance"] = grading.get("provenance") \
                         or view["provenance"]
                     grading["view"] = view
-        _harvest_mod.reconcile(archive, list(rows.values()))
+        # ANCHORED, like the listing. Unanchored, nothing covers any path, so
+        # every absent run reads `unknown` - safe, but it means this panel and
+        # the card beside it can disagree about the same run, which is worse
+        # than either answer alone.
+        _harvest_mod.reconcile(archive, list(rows.values()),
+                               _harvest_mod.anchors_for(cfg.stages))
         return _compare.compare(rows[a], rows[b])
+
+    @app.get("/api/archive/sweep")
+    def archive_sweep(limit: int = 200) -> dict:
+        """What this history already proves, without being asked a question.
+
+        The side-by-side view answers a question you brought. `attribution ==
+        SINGLE` is the only case where pointing at a knob is defensible, and
+        finding those pairs by hand in forty runs means working through seven
+        hundred and eighty combinations - so the instrument existed and nobody
+        could aim it.
+
+        NOT ON THE POLL. This is quadratic within an experiment group and it is
+        read when a tab opens, the same bargain Backstage takes with forking
+        `describe`. The scanner runs every five seconds and cannot afford
+        anything of the sort.
+
+        Projects the stored documents exactly as the listing does, because a
+        second path to "what does this eval say" would be a second opinion on
+        screen in a place nobody is checking.
+        """
+        archive = _archive()
+        if archive is None:
+            raise HTTPException(503, app.state.archive_error or "no archive")
+        from .archive import compare as _compare
+        from . import evalreport as _proj
+
+        # NO reconcile HERE, deliberately. The listing stats each run because
+        # it draws whether the directory survives; a config comparison does not
+        # care - the manifest and the eval report are in the row, and a run whose
+        # weights were reclaimed is exactly as comparable as one still on disk.
+        # That is the whole reason harvest exists: the record stops being
+        # attached to the weights. Statting a few hundred paths to answer a
+        # question that never reads the answer is just a slower sweep.
+        rows = archive.surgeries(limit=max(2, min(limit, 500)))
+        for row in rows:
+            build = str((row.get("manifest") or {}).get("build_id") or "")
+            for grading in row.get("gradings") or []:
+                doc = grading.get("report")
+                if isinstance(doc, dict):
+                    view = _proj.project_eval(doc, build)
+                    view["provenance"] = grading.get("provenance") \
+                        or view["provenance"]
+                    grading["view"] = view
+        found = _compare.sweep(rows)
+        # WHAT THE SWEEP COULD NOT SEE. `limit` bounds the rows read, so a
+        # history longer than it has runs this answer says nothing about - and
+        # "no findings" must never be mistaken for "nothing to find".
+        found["archive_total"] = archive.count("surgeries")
+        return found
 
     @app.get("/viewer", response_class=HTMLResponse)
     def viewer() -> HTMLResponse:
@@ -550,7 +668,7 @@ def create_app(config: Optional[TheatreConfig] = None) -> FastAPI:
         return HTMLResponse(headers={"Cache-Control": "no-store, must-revalidate"},
                             content=render_from_dir(
             _VIEWER_DIR,
-            title="seren-theatre",
+            title="SerenTheatre",
             brand="Seren<b>Theatre</b>",
             subtitle=f"v{APP_VERSION} · watch a model being made",
             accent=ACCENT,

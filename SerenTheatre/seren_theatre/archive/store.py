@@ -2,8 +2,8 @@
 
 THE PROBLEM, STATED PROPERLY. It is not "files might get deleted." It is that
 the thing worth keeping is INSIDE the thing you have to delete. An eval report
-is about ten kilobytes; the rung it sits in is forty-five gigabytes. Deleting
-that rung is not an accident or a mistake - it is the correct, routine
+is about ten kilobytes; the run it sits in is forty-five gigabytes. Deleting
+that run is not an accident or a mistake - it is the correct, routine
 operation when you need the disk back. So the current design guarantees that
 ordinary housekeeping destroys the evidence, and the more disciplined you are
 about disk, the less history you have.
@@ -23,7 +23,7 @@ change. `rebuild()` recomputes every column from the stored documents, so
 adding a column later is a migration that cannot lose anything, and a column
 that turns out to be wrong is a bug rather than a data loss. It is the same
 bargain the JSON-plus-index design would have made across two stores, kept
-inside one - and it matters more here, because once the rung is deleted this
+inside one - and it matters more here, because once the run is deleted this
 IS the only copy.
 
 Never write a column without the document it came from. A column is a claim;
@@ -61,6 +61,93 @@ DOCUMENTS = {
     "gates": "report",
 }
 
+# EVERY TABLE THAT HOLDS RECORDS, derived rather than retyped. `prompt_books`
+# has no document column so it is absent from DOCUMENTS, and the membership
+# test for it used to be spelled out at each call site as
+# `table not in DOCUMENTS and table != "prompt_books"` - two copies of "which
+# tables exist", which is the shape of defect this codebase keeps paying for.
+# `meta` is not here: it holds the schema version, not records, and merging or
+# counting it would mean something different.
+TABLES = frozenset(DOCUMENTS) | {"prompt_books"}
+
+# COLUMNS THAT ARRIVED AFTER THE TABLES DID. (table, column, declaration).
+#
+# Declared HERE ONLY - never also in the CREATE statements above - so there is
+# exactly one place that says a column exists. See Archive._migrate for why
+# putting a new column in SCHEMA alone is a silent no-op on any archive that is
+# already on disk, and why routing fresh databases through the same ALTER path
+# is what keeps this loop from being dead code nobody exercises.
+#
+# Every declaration needs a DEFAULT: sqlite will not add a NOT NULL column to a
+# table with rows in it otherwise, and the rows are the whole point.
+#: The recipe was NOT CAPTURED / captured / looked for and absent / unreadable.
+#: Four states because "there is no recipe digest on this row" has four
+#: different causes and only one of them is a problem worth chasing:
+#:
+#:   ""          this row predates recipe capture entirely
+#:   "captured"  the text is in blobs under `recipe_blob`
+#:   "absent"    the run directory holds no recipe - an older ms-moe-maker, or
+#:               a build whose recipe was never written beside its output
+#:   "unreadable" it was there and could not be stored; the reason is the row's
+#:               problem to surface, not to swallow
+#:
+#: A single nullable digest column would collapse all four into "no", which is
+#: how a person ends up unable to tell "nothing to worry about" from "your
+#: history is quietly incomplete".
+RECIPE_NOT_CAPTURED = ""
+RECIPE_CAPTURED = "captured"
+RECIPE_ABSENT = "absent"
+RECIPE_UNREADABLE = "unreadable"
+
+# ── IS THE RUN DIRECTORY STILL THERE: THREE ANSWERS, NOT TWO ────────────────
+#
+# `present` / `gone` were the whole vocabulary, and `gone` was carrying two
+# completely different facts: "I looked and it is not there" and "I could not
+# look". Collapsing those announces a model deletion because a share hiccupped.
+#
+# That is the same error this codebase already painted in red over eight
+# consecutive healthy fine-tune stages before it learned to report mtimes and
+# refuse the verdict - a conclusion a failed `stat()` is not entitled to draw.
+# Under a mount the failure is not rare, it is Tuesday.
+RUN_PRESENT = "present"
+RUN_GONE = "gone"
+RUN_UNKNOWN = "unknown"
+RUN_STATES = (RUN_PRESENT, RUN_GONE, RUN_UNKNOWN)
+
+ADDED_COLUMNS = (
+    # WHAT BUILT THIS. The manifest already carries a sha256 of every DEFAULTS
+    # file a run inherited, and carried nothing at all about the recipe that is
+    # the primary input - so a row could tell you the fingerprint of the config
+    # it resolved to and not the text that produced it. `build_id` makes a
+    # rebuild verifiable; this makes it possible.
+    ("surgeries", "recipe_blob", "TEXT NOT NULL DEFAULT ''"),
+    ("surgeries", "recipe_state", "TEXT NOT NULL DEFAULT ''"),
+    # PRESENCE, THREE-VALUED. A separate column rather than a widening of
+    # `run_present`, because `INTEGER NOT NULL DEFAULT 1` cannot hold a third
+    # state and re-typing a column in sqlite means rebuilding the table - on
+    # somebody's only copy of their history, to add a value. `run_present`
+    # stays as a DERIVED boolean with exactly one writer; see mark_presence.
+    ("surgeries", "run_state", "TEXT NOT NULL DEFAULT ''"),
+    # THE FRAME THE PATH WAS READ UNDER. A mount prefix is configuration, and
+    # configuration is a statement about NOW; a row is a claim about the past.
+    # Somebody re-mounts the Spark at /mnt/builders/spark, or retires the box,
+    # and a history that only ever knew the CURRENT config would quietly
+    # re-interpret every old row against a prefix that was never true for it.
+    #
+    # Same rule this archive already applies to `evalreport.provenance`, which
+    # is decided once at harvest against the manifest that was there at the
+    # time because recomputing it later "would quietly answer a different
+    # question". This is that, for paths. Record the frame with the fact.
+    ("surgeries", "remote_prefix", "TEXT NOT NULL DEFAULT ''"),
+    # THE RUN DIRECTORY AS THE BUILDER SPELLED IT. Not derivable from the two
+    # columns above: `remote_prefix` is the prefix that was swapped IN and the
+    # stage root that was swapped OUT is not stored, so the mapping is only
+    # invertible at the moment of harvest. Stored rather than recomputed for the
+    # same reason the prefix is - it is the path that is still true after the
+    # mount moves, which is precisely when somebody needs it.
+    ("surgeries", "builder_path", "TEXT NOT NULL DEFAULT ''"),
+)
+
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS meta (
            key TEXT PRIMARY KEY,
@@ -68,24 +155,24 @@ SCHEMA = [
 
     # A BUILD THAT HAPPENED. `run_key` rather than build_id as the identity,
     # because build_id is the digest of the CONFIG - two runs of the same
-    # recipe share it, and they are two runs. The rung path plus its start
+    # recipe share it, and they are two runs. The run path plus its start
     # time is what makes one of them this one.
     """CREATE TABLE IF NOT EXISTS surgeries (
            run_key      TEXT PRIMARY KEY,
            build_id     TEXT NOT NULL DEFAULT '',
            stage        TEXT NOT NULL DEFAULT '',
            name         TEXT NOT NULL DEFAULT '',
-           rung_path    TEXT NOT NULL DEFAULT '',
+           run_path    TEXT NOT NULL DEFAULT '',
            started      REAL,
            finished     REAL,
            state        TEXT NOT NULL DEFAULT '',
            ok           INTEGER,
            harvested    REAL NOT NULL,
            -- IS THE DIRECTORY STILL THERE. The one column that must never be
-           -- guessed: a row whose rung is gone is a HISTORICAL RECORD, and
-           -- rendering it beside live rungs would have the viewer assert that
+           -- guessed: a row whose run is gone is a HISTORICAL RECORD, and
+           -- rendering it beside live runs would have the viewer assert that
            -- a directory exists when it does not. Refreshed on every harvest.
-           rung_present INTEGER NOT NULL DEFAULT 1,
+           run_present INTEGER NOT NULL DEFAULT 1,
            manifest     TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS surgeries_build ON surgeries(build_id)",
     "CREATE INDEX IF NOT EXISTS surgeries_started ON surgeries(started DESC)",
@@ -99,7 +186,7 @@ SCHEMA = [
            build_id     TEXT NOT NULL DEFAULT '',
            generated    REAL,
            -- Computed AT HARVEST, against the manifest that was on disk at the
-           -- time. Deciding it later, from a rung that has since been rebuilt,
+           -- time. Deciding it later, from a run that has since been rebuilt,
            -- would answer a different question than the one being asked.
            provenance   TEXT NOT NULL DEFAULT 'unknown',
            ok           INTEGER,
@@ -244,7 +331,19 @@ class Archive:
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
+    def _columns(self, table: str) -> set:
+        with self._lock:
+            return {row[1] for row in
+                    self._db.execute(f"PRAGMA table_info({table})")}
+
     def _migrate(self) -> None:
+        """Create what is missing, in an order that cannot make things worse.
+
+        SCHEMA first, because `meta` has to exist before its version can be
+        read. Then the version CHECK, before any ALTER - an archive written by a
+        newer seren-theatre must be refused untouched rather than altered by an
+        older one that does not know what its columns mean. Then the columns.
+        """
         with self._lock, self._db:
             for statement in SCHEMA:
                 self._db.execute(statement)
@@ -261,11 +360,258 @@ class Archive:
                     f"{SCHEMA_VERSION}. Upgrade rather than being shown a "
                     f"guess about your own history.")
 
+        # ── COLUMNS ADDED AFTER THE FIRST SCHEMA ─────────────────────────
+        #
+        # `CREATE TABLE IF NOT EXISTS` IS A NO-OP ON A TABLE THAT EXISTS, which
+        # makes adding a column to SCHEMA one of the quietest bugs available
+        # here. On a fresh database the column appears and every test passes; on
+        # a real archive that has been running for a week it never appears at
+        # all, and the first write naming it raises "no such column" - on
+        # somebody else's box, months later.
+        #
+        # It also left `rebuild()`'s promise without a floor. That docstring
+        # says adding a column "becomes a migration that cannot lose anything",
+        # which is true about FILLING one and silent about creating it: nothing
+        # anywhere could add a column to a file that already existed.
+        #
+        # ADDED_COLUMNS IS THE ONLY PLACE THESE ARE DECLARED, deliberately.
+        # Listing them here AND in the CREATE statements would be two copies of
+        # one fact - the defect this codebase keeps paying for - so a fresh
+        # database gets its base table from SCHEMA and every later column from
+        # this same loop. Which means the migration path runs on every archive
+        # ever opened and cannot rot in the corner where only an upgrade would
+        # have exercised it.
+        for table, column, decl in ADDED_COLUMNS:
+            if column in self._columns(table):
+                continue
+            try:
+                with self._lock, self._db:
+                    self._db.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            except sqlite3.Error as exc:
+                raise ArchiveError(
+                    f"{self.path}: could not add {table}.{column}: {exc}"
+                ) from exc
+
+    def checkpoint(self) -> bool:
+        """Fold the WAL back into the database file. Best effort, never raises.
+
+        THE LIE THIS REMOVES, AND IT IS THE REASSURING KIND. In WAL mode the
+        committed rows live in `<name>-wal` until something checkpoints, and
+        sqlite only does that on its own when the log crosses
+        `wal_autocheckpoint` (1000 pages, ~4 MB) or when the last connection
+        closes. This archive holds its connection for the life of the process
+        and nothing called `close()`, so neither ever happened: observed on a
+        real box, `archive.db` was **4 KB** and `archive.db-wal` was 383 KB,
+        with the main file untouched for eight days.
+
+        Nothing was lost - sqlite reads the WAL and the database together, so
+        every query answered correctly. What broke was BACKING IT UP.
+        `cp archive.db somewhere` produces a file that opens, has the right
+        name, and contains nothing, schema included, because the CREATE TABLEs
+        went into the WAL too. And the file that actually held the history was
+        called `.db-wal`, which looks exactly like the sort of temp artifact a
+        person tidies away.
+
+        TRUNCATE rather than PASSIVE: PASSIVE moves the pages and leaves the
+        log file at its size, which keeps the shape that misleads. Returns
+        whether it ran, because "I checkpointed" is a claim and a caller
+        deciding whether a plain file copy is safe deserves the real answer.
+        """
+        try:
+            with self._lock:
+                self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            return True
+        except sqlite3.Error:
+            # A network filesystem, a reader holding the log open, a
+            # read-only mount. Not fatal, and not something to pretend about.
+            return False
+
     def close(self) -> None:
+        """Checkpoint, then close. In that order, and the order is the point.
+
+        Closing a WAL connection normally checkpoints on the way out, but only
+        when it is the LAST connection - and "last" is not something this
+        object can know. Doing it explicitly first means the file on disk is
+        complete whether or not anything else still has the database open.
+        """
+        self.checkpoint()
         try:
             self._db.close()
         except sqlite3.Error:
             pass
+
+    def backup(self, dest: Path) -> Path:
+        """A consistent copy of a LIVE archive, without stopping anything.
+
+        `sqlite3.Connection.backup` is the online backup API: it reads the
+        database and its WAL through the engine, so the result is a coherent
+        snapshot even while harvest is writing. That is the whole reason not to
+        offer this as advice to use `cp` - see `checkpoint()` for what `cp`
+        actually produces here.
+
+        The destination is written and then VERIFIED by opening it and counting
+        what came across, because a backup nobody has read is a belief. Returns
+        the path written; raises ArchiveError with a sentence rather than a
+        sqlite traceback.
+        """
+        dest = Path(dest)
+        if dest.resolve() == self.path.resolve():
+            raise ArchiveError(
+                f"the backup destination is the archive itself ({dest}). "
+                f"Name a different file.")
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ArchiveError(f"cannot create {dest.parent}: {exc}") from exc
+        try:
+            with self._lock:
+                target = sqlite3.connect(str(dest))
+                try:
+                    self._db.backup(target)
+                finally:
+                    target.close()
+        except (sqlite3.Error, OSError) as exc:
+            raise ArchiveError(f"backup to {dest} failed: {exc}") from exc
+
+        # PROVE IT. The failure this feature exists to prevent is a backup file
+        # that looks right and holds nothing, so shipping one without reading
+        # it back would be the same bug wearing the fix's clothes.
+        try:
+            check = Archive(dest)
+        except ArchiveError as exc:
+            raise ArchiveError(
+                f"backup wrote {dest} and it could not be reopened: {exc}"
+            ) from exc
+        try:
+            copied = check.count("surgeries")
+            here = self.count("surgeries")
+        finally:
+            check.close()
+        if copied != here:
+            raise ArchiveError(
+                f"backup to {dest} holds {copied} runs and the archive holds "
+                f"{here}. Refusing to call that a backup.")
+        return dest
+
+    def merge(self, other: "Archive") -> Dict[str, int]:
+        """Fold another archive into this one. Idempotent, by construction.
+
+        WHY THIS IS SAFE AND NOT A CONFLICT-RESOLUTION PROBLEM. Every row is
+        keyed by a content-derived id - `run_key` is sha256 of the stage, the
+        resolved path and the start time - and every writer here is an UPSERT
+        on that key. So the union of two archives is well defined: a key in
+        both is the same run described twice, and a key in one is a run the
+        other never saw. There is no ordering to get wrong and no last-writer
+        to pick, which is why merging is a command rather than a project.
+
+        THIS IS WHAT REPLACED A SERVICE. The reason to want a shared record
+        store was surviving a box being swapped or reformatted; merge does that
+        without another install, another port, or another thing to explain. Two
+        boxes, two archives, one command, and running it twice changes nothing
+        the second time.
+
+        Blobs are NOT touched here - they are content-addressed files and a
+        directory copy already merges them correctly, which is one of the four
+        things blobs.py says that layout buys. Returns per-table counts.
+
+        ── TWO RULES THAT ARE NOT "LAST WRITER WINS" ────────────────────────
+
+        `run_present` IS NEVER TAKEN FROM THE SOURCE, and this was found by
+        running a merge rather than by reading one. It is not a property of the
+        run; it is THIS archive's answer to "can I open that directory".
+        Merging the Spark's archive into the NUC's with a naive upsert made the
+        NUC's row claim a directory was present - present on a box the NUC may
+        not even have mounted. That is the one column whose comment says it
+        "must never be guessed", guessed.
+
+        So a row arriving from elsewhere lands with `run_present = 0`, which
+        is not a compromise: on this archive's box the directory genuinely is
+        not there until something looks and finds it. Harvest corrects it on
+        the next scan if the path is reachable. A row that already exists keeps
+        whatever THIS archive last observed, because that is the only
+        observation about this archive's view of the disk.
+
+        (The three-valued encoding this note used to ask for now exists as
+        `run_state`, so a foreign row lands as `unknown` rather than as the
+        nearest-true `0`. `run_present` is still written, derived, for
+        consumers that read the boolean.)
+
+        THE MORE RECENT HARVEST DESCRIBES THE RUN. Two rows under one key are
+        one run looked at twice, and the later look has seen more of it - an
+        eval report that arrived, a state that moved from running to finished.
+        So
+        `harvested` arbitrates the document rather than argument order, which
+        also makes the result independent of which direction you merged.
+        """
+        moved: Dict[str, int] = {}
+
+        rows = other._all("surgeries")
+        kept = 0
+        for row in rows:
+            row = dict(row)
+            mine = self.surgery_row(str(row.get("run_key") or ""))
+            if mine is None:
+                # NEVER SEEN HERE, AND THAT IS `unknown`, NOT `gone`. Nothing
+                # on this box has looked for that directory - it may be sitting
+                # on a share this archive has never had mounted. `gone` would
+                # be this archive asserting a deletion it has no evidence for,
+                # which is the whole reason the third state exists. Harvest
+                # corrects it to present/gone on the first scan that can reach
+                # the path.
+                row["run_state"] = RUN_UNKNOWN
+                row["run_present"] = 0
+            else:
+                # A row that already exists keeps whatever THIS archive last
+                # observed, because that is the only observation about this
+                # archive's view of the disk.
+                row["run_state"] = mine.get("run_state") or RUN_UNKNOWN
+                row["run_present"] = mine.get("run_present", 0)
+                if float(mine.get("harvested") or 0) >= float(
+                        row.get("harvested") or 0):
+                    # Ours is the later look. Take nothing but keep the row.
+                    kept += 1
+                    continue
+            self.put_surgery(row)
+        moved["surgeries"] = len(rows)
+        moved["surgeries_already_current"] = kept
+
+        for table, writer in (("gradings", self.put_grading),
+                              ("gates", self.put_gate),
+                              ("prompt_books", self.put_prompt_book)):
+            # Plain unions: these carry no observation about local disk, so
+            # there is nothing here that only this archive could know.
+            found = other._all(table)
+            for row in found:
+                writer(row)
+            moved[table] = len(found)
+        return moved
+
+    def surgery_row(self, run_key: str) -> Optional[Dict[str, Any]]:
+        """One raw surgeries row, or None. Columns as stored.
+
+        Separate from `surgery()`, which assembles a rendering with gradings
+        nested underneath it. Merge needs the flat truth, and reusing the
+        rendering would have it reasoning about a shape built for a viewer.
+        """
+        with self._lock:
+            found = self._db.execute(
+                "SELECT * FROM surgeries WHERE run_key=?",
+                (run_key,)).fetchone()
+        return dict(found) if found is not None else None
+
+    def _all(self, table: str) -> List[Dict[str, Any]]:
+        """Every row of one table, as the put_* writers want them back.
+
+        Deliberately unpaged: these are kilobyte documents and the largest
+        realistic archive is thousands of rows. A cursor here would be
+        machinery in front of a `SELECT *` that fits in memory twice over.
+        """
+        if table not in TABLES:
+            raise ArchiveError(f"unknown table {table!r}")
+        with self._lock:
+            found = self._db.execute(f"SELECT * FROM {table}").fetchall()
+        return [dict(row) for row in found]
 
     def __enter__(self) -> "Archive":
         return self
@@ -306,18 +652,34 @@ class Archive:
         except sqlite3.Error as exc:
             raise ArchiveError(f"writing {table}: {exc}") from exc
 
-    def mark_absent(self, run_key: str, present: bool) -> None:
-        """Record whether the rung directory is still on disk.
+    def mark_presence(self, run_key: str, state: str) -> None:
+        """Record whether the run directory is still on disk, three-valued.
 
         Its own method because it is the one field that changes for reasons
-        that have nothing to do with the run. A row whose rung is gone is
+        that have nothing to do with the run. A row whose run is gone is
         still a true record; it is just no longer a description of anything
         you can open.
+
+        `run_present` IS WRITTEN HERE AND NOWHERE ELSE. It is the old boolean,
+        kept because `archive/compare.py` and any consumer built against it
+        still read it, and it is now DERIVED - one source of truth (`run_state`)
+        and one derivation, rather than two columns a caller can set apart.
+        Note which way the derivation falls: `unknown` reads as NOT present,
+        because a boolean asked "is it there" must not answer yes about
+        something nobody could look at. A three-state reader is required to
+        tell `unknown` from `gone`; that is exactly why the column was added.
         """
+        if state not in RUN_STATES:
+            raise ArchiveError(
+                f"run_state {state!r} is not one of {list(RUN_STATES)}. A "
+                f"presence this code cannot name must not be stored: a "
+                f"typo'd state would read as neither present nor gone and the "
+                f"viewer would draw whichever branch fell through.")
         with self._lock, self._db:
             self._db.execute(
-                "UPDATE surgeries SET rung_present=? WHERE run_key=?",
-                (1 if present else 0, run_key))
+                "UPDATE surgeries SET run_state=?, run_present=? "
+                "WHERE run_key=?",
+                (state, 1 if state == RUN_PRESENT else 0, run_key))
 
     # ── reading ──────────────────────────────────────────────────────────
 
@@ -384,7 +746,7 @@ class Archive:
         return item
 
     def count(self, table: str = "surgeries") -> int:
-        if table not in DOCUMENTS and table != "prompt_books":
+        if table not in TABLES:
             raise ArchiveError(f"no such table: {table}")
         with self._lock:
             return int(self._db.execute(

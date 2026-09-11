@@ -2,14 +2,14 @@
 
 THE PROBLEM RESTATED, because every test here is a consequence of it: the
 record worth keeping lives INSIDE the artifact you have to delete. Ten
-kilobytes of eval report inside forty-five gigabytes of rung. Deleting the rung
+kilobytes of eval report inside forty-five gigabytes of run. Deleting the run
 is correct and routine; doing it destroys the evidence.
 
 Three properties get guarded, and the third is the one that will matter in a
 year:
 
-  * a harvested run outlives its directory, and SAYS SO. A row whose rung is
-    gone is a historical record, not a rung - and Theatre's own database gets
+  * a harvested run outlives its directory, and SAYS SO. A row whose run is
+    gone is a historical record, not a run - and Theatre's own database gets
     no more benefit of the doubt than a manifest does.
   * harvest is idempotent, because it runs on a poll.
   * DOCUMENTS ARE THE TRUTH AND COLUMNS ARE AN INDEX. `rebuild` recomputes
@@ -45,7 +45,7 @@ def _manifest(**over):
     return base
 
 
-def _rung(path="/lab/dryrun_0.5B", **over):
+def _run(path="/lab/dryrun_0.5B", **over):
     out = {"name": "dryrun_0.5B", "path": path, "manifest": _manifest(),
            "state": "finished", "eval": None, "gate": None}
     out.update(over)
@@ -111,39 +111,39 @@ def test_only_a_run_that_has_stopped_is_harvested(archive, state, stored):
     """A manifest is rewritten on every stage transition. Archiving one
     mid-run would store a sentence that was about to be replaced - and the row
     would then be indistinguishable from a run that genuinely stopped there."""
-    rung = _rung(state=state, manifest=_manifest(state=state))
-    assert H.harvest_rung(archive, "Lab", rung) is stored
+    run = _run(state=state, manifest=_manifest(state=state))
+    assert H.harvest_run(archive, "Lab", run) is stored
     assert archive.count("surgeries") == (1 if stored else 0)
 
 
 def test_harvesting_twice_stores_once(archive):
     """It runs on a poll. Anything else would be a race with itself."""
-    rung = _rung()
-    assert H.harvest_rung(archive, "Lab", rung) is True
-    assert H.harvest_rung(archive, "Lab", rung) is False
+    run = _run()
+    assert H.harvest_run(archive, "Lab", run) is True
+    assert H.harvest_run(archive, "Lab", run) is False
     assert archive.count("surgeries") == 1
 
 
-def test_an_uninstrumented_rung_is_left_alone(archive):
+def test_an_uninstrumented_run_is_left_alone(archive):
     """No manifest means nothing to record. A directory with a GGUF in it is
     still watchable; it is just not a run that said anything about itself."""
-    assert H.harvest_rung(archive, "Lab", _rung(manifest=None)) is False
+    assert H.harvest_run(archive, "Lab", _run(manifest=None)) is False
 
 
 def test_two_runs_of_one_recipe_are_two_rows(archive):
     """build_id is the digest of the CONFIG. Two runs of one recipe share it,
     and they are two runs - so identity is the stage, the path and the start."""
-    a = _rung(manifest=_manifest(started=1000.0))
-    b = _rung(manifest=_manifest(started=2000.0))
-    H.harvest_rung(archive, "Lab", a)
-    H.harvest_rung(archive, "Lab", b)
+    a = _run(manifest=_manifest(started=1000.0))
+    b = _run(manifest=_manifest(started=2000.0))
+    H.harvest_run(archive, "Lab", a)
+    H.harvest_run(archive, "Lab", b)
     assert archive.count("surgeries") == 2
 
 
 def test_the_same_run_in_two_stages_is_two_rows(archive):
     """Two stages can hold a directory with the same name."""
-    H.harvest_rung(archive, "Lab", _rung())
-    H.harvest_rung(archive, "Lyceum", _rung())
+    H.harvest_run(archive, "Lab", _run())
+    H.harvest_run(archive, "Lyceum", _run())
     assert archive.count("surgeries") == 2
 
 
@@ -152,9 +152,9 @@ def test_re_running_eval_adds_a_grading_rather_than_replacing_one(archive):
     9/10 after installing a compiler are, together, the clearest possible
     statement of what actually changed. Keying on build_id would have the
     second silently overwrite the first."""
-    rung = _rung(eval={"build_id": "cafe0001", "generated": 100.0, "ok": False,
+    run = _run(eval={"build_id": "cafe0001", "generated": 100.0, "ok": False,
                        "provenance": "matches"})
-    H.harvest_rung(archive, "Lab", rung)
+    H.harvest_run(archive, "Lab", run)
     key = archive.surgeries()[0]["run_key"]
     archive.put_grading({
         "grading_key": H.grading_key(key, {"generated": 200.0,
@@ -169,7 +169,7 @@ def test_re_running_eval_adds_a_grading_rather_than_replacing_one(archive):
 def test_a_gates_unmeasured_count_is_kept_apart_from_its_findings(archive):
     """Folded into findings it reads as a problem; dropped it reads as a pass.
     It is neither, and that distinction has to survive into the database."""
-    H.harvest_rung(archive, "Lab", _rung(gate={
+    H.harvest_run(archive, "Lab", _run(gate={
         "status": "unmeasurable", "findings": ["two experts are alike"],
         "unmeasured": ["cross-domain loss: no held-out rows", "config audit"]}))
     gate = archive.surgeries()[0]["gate"]
@@ -181,47 +181,47 @@ def test_an_unknown_ok_stays_unknown(archive):
     """Three values, all the way to the column. Coercing "the manifest never
     said" into False turns a missing reading into a failed build - the same
     mistake as folding `unmeasurable` into `fail` one layer up."""
-    H.harvest_rung(archive, "Lab", _rung(manifest=_manifest(ok=None)))
+    H.harvest_run(archive, "Lab", _run(manifest=_manifest(ok=None)))
     assert archive.surgeries()[0]["ok"] is None
 
 
 # ── the reason this exists ──────────────────────────────────────────────────
 
-def test_the_record_outlives_the_rung_and_says_that_it_did(tmp_path):
+def test_the_record_outlives_the_run_and_says_that_it_did(tmp_path):
     """THE WHOLE FEATURE, in one test.
 
     Harvest a finished run, delete the forty-five gigabytes, and the ten
     kilobytes that were worth keeping are still there - correctly reported as
     a historical record rather than as a directory somebody could open.
     """
-    rung_dir = tmp_path / "dryrun_0.5B"
-    rung_dir.mkdir()
+    run_dir = tmp_path / "dryrun_0.5B"
+    run_dir.mkdir()
     with S.connect(str(tmp_path / "a.db")) as archive:
-        rung = _rung(path=str(rung_dir), eval={
+        run = _run(path=str(run_dir), eval={
             "build_id": "cafe0001", "generated": 5.0, "provenance": "matches",
             "ok": True,
             "routing": {"experts": [{"name": "python", "enrichment": 2.14}]}})
-        H.harvest_rung(archive, "Lab", rung)
-        assert archive.surgeries()[0]["rung_present"] == 1
+        H.harvest_run(archive, "Lab", run)
+        assert archive.surgeries()[0]["run_present"] == 1
 
-        shutil.rmtree(rung_dir)
+        shutil.rmtree(run_dir)
 
         rows = H.reconcile(archive, archive.surgeries())
-        assert rows[0]["rung_present"] is False, (
-            "a row whose rung is gone must not claim the directory is there - "
+        assert rows[0]["run_present"] is False, (
+            "a row whose run is gone must not claim the directory is there - "
             "Theatre's own database gets no more benefit of the doubt than a "
             "manifest does")
         assert (rows[0]["gradings"][0]["report"]["routing"]["experts"][0]
                 ["enrichment"] == 2.14), "the measurement did not survive"
         # And it stuck, so the stored column converges without being trusted.
-        assert archive.surgeries()[0]["rung_present"] == 0
+        assert archive.surgeries()[0]["run_present"] == 0
 
 
 # ── documents are the truth; columns are an index ───────────────────────────
 
 def test_the_original_document_is_stored_verbatim(archive):
-    rung = _rung(manifest=_manifest(some_future_field="kept"))
-    H.harvest_rung(archive, "Lab", rung)
+    run = _run(manifest=_manifest(some_future_field="kept"))
+    H.harvest_run(archive, "Lab", run)
     assert archive.surgeries()[0]["manifest"]["some_future_field"] == "kept", (
         "a field this version does not index still has to be IN the row, or "
         "the archive is a lossy projection of the thing it is preserving")
@@ -235,7 +235,7 @@ def test_rebuild_recomputes_every_column_from_the_documents(archive):
     was computed from is still sitting in the row. Simulated here by corrupting
     the columns and rebuilding them back.
     """
-    H.harvest_rung(archive, "Lab", _rung(
+    H.harvest_run(archive, "Lab", _run(
         gate={"status": "ok", "findings": [], "unmeasured": ["a"]},
         eval={"build_id": "cafe0001", "generated": 9.0, "ok": True,
               "provenance": "matches"}))
@@ -259,10 +259,10 @@ def test_provenance_is_decided_once_and_never_rebuilt(archive):
     "Did this eval grade the build on disk" needs the report AND the manifest,
     so it is settled at harvest against the manifest that was there then - which
     is also the only moment it has a single honest answer. Re-deriving it later
-    against a rung that has since been rebuilt would quietly answer a different
+    against a run that has since been rebuilt would quietly answer a different
     question and present it as the same one.
     """
-    H.harvest_rung(archive, "Lab", _rung(
+    H.harvest_run(archive, "Lab", _run(
         eval={"build_id": "cafe0001", "generated": 9.0, "ok": True,
               "provenance": "matches"}))
     with archive._db:
@@ -277,7 +277,7 @@ def test_one_unparseable_document_does_not_take_the_history_down(archive):
     """The row still carries its columns, which is a real if lesser reading.
     Losing everything to one bad blob would be the archive punishing its reader
     for a write that went wrong months ago."""
-    H.harvest_rung(archive, "Lab", _rung())
+    H.harvest_run(archive, "Lab", _run())
     with archive._db:
         archive._db.execute("UPDATE surgeries SET manifest='{not json'")
     row = archive.surgeries()[0]
@@ -433,7 +433,7 @@ def test_the_archive_keeps_the_document_and_not_the_viewers_reading_of_it(
     Harvest first stored what the viewer draws, which drops `avg_length` and
     `capped_generations` - so the archive was a lossy copy under a docstring
     promising verbatim documents, and the loss was permanent the moment the
-    rung was deleted.
+    run was deleted.
 
     A field this version ignores has to still be in the row, because the whole
     argument for keeping documents is that the NEXT version might not ignore
@@ -453,7 +453,7 @@ def test_the_archive_keeps_the_document_and_not_the_viewers_reading_of_it(
         "principle is not: some field is always dropped")
 
     with S.connect(str(tmp_path / "a.db")) as archive:
-        H.harvest_rung(archive, "Lab", _rung(eval=projected))
+        H.harvest_run(archive, "Lab", _run(eval=projected))
         stored = archive.surgeries()[0]["gradings"][0]["report"]
 
     assert stored["stages"]["python"]["avg_length"] == 64.0, (
@@ -474,11 +474,11 @@ def test_an_archived_report_is_re_projected_on_read(tmp_path):
     from seren_theatre.app import create_app
 
     stage = tmp_path / "lab"
-    rung = stage / "dryrun_0.5B"
-    rung.mkdir(parents=True)
-    (rung / "msmoe-run.json").write_text(json.dumps(
+    run = stage / "dryrun_0.5B"
+    run.mkdir(parents=True)
+    (run / "msmoe-run.json").write_text(json.dumps(
         _manifest(name="dryrun_0.5B")), encoding="utf-8")
-    (rung / "eval_report.json").write_text(json.dumps({
+    (run / "eval_report.json").write_text(json.dumps({
         "schema_version": 1, "build_id": "cafe0001", "generated": 5.0,
         "ok": True,
         "routing": {"experts": {"python": {"own_share": 0.7,
@@ -492,7 +492,7 @@ def test_an_archived_report_is_re_projected_on_read(tmp_path):
     cfg.stages = [StageConfig(name="Lab", path=str(stage))]
     with TestClient(create_app(cfg)) as client:
         client.get("/api/state")
-        shutil.rmtree(rung)
+        shutil.rmtree(run)
         row = client.get("/api/archive").json()["surgeries"][0]
 
     view = row["gradings"][0]["view"]
@@ -501,7 +501,7 @@ def test_an_archived_report_is_re_projected_on_read(tmp_path):
         "0.49 against a top-2 ceiling of 0.50 is saturated; the derived verdict "
         "was not recomputed from the stored document")
     assert view["routing"]["input_blind"] is True
-    assert row["rung_present"] is False
+    assert row["run_present"] is False
 
 
 # ── the threadpool ──────────────────────────────────────────────────────────
@@ -525,7 +525,7 @@ def test_the_archive_survives_being_used_from_many_threads(tmp_path):
     import threading
 
     with S.connect(str(tmp_path / "a.db")) as archive:
-        H.harvest_rung(archive, "Lab", _rung())
+        H.harvest_run(archive, "Lab", _run())
         errors = []
 
         def hammer(n):
