@@ -81,7 +81,7 @@ def test_backstage_mounts_exactly_the_expected_write_surface(client):
                      "/api/backstage/run",
                      # Eval WRITES: it forks `ms-moe-maker eval`, which
                      # generates real tokens against a built model and
-                     # persists a report into the rung. READING that
+                     # persists a report into the run. READING that
                      # report is a GET in app.py and stays available on a
                      # plain viewer; producing one means running the
                      # builder, so it lives behind Backstage.

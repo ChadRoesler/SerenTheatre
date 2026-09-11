@@ -137,7 +137,7 @@ body { font-size: 14px; }
     padding: 6px;
 }
 
-/* A STEP IS NOW A SMALL CARD, not a ladder rung. The old flat ladder rendered
+/* A STEP IS NOW A SMALL CARD, not a ladder run. The old flat ladder rendered
    all seventeen stages of a gauntlet expanded, which is a wall you read; the
    sketch is a stack of one-line rows that open to their detail. Same
    collapsible mechanics as .card, one level down and quieter - the same design
@@ -308,7 +308,7 @@ body { font-size: 14px; }
 .res-when { color: var(--faint); font-size: 11.5px; margin-bottom: 10px; }
 
 /* PROVENANCE IS THE LOUDEST THING IN THE PANEL WHEN IT IS STALE. A rebuilt
-   rung keeps its old eval report, and stale numbers rendered plainly are the
+   run keeps its old eval report, and stale numbers rendered plainly are the
    confidently-wrong failure this whole service exists against. `unknown` is
    toned down but never hidden - a viewer that cannot tell has to say so. */
 .res-prov { font-size: 11.5px; line-height: 1.45; border-radius: 6px;
@@ -487,7 +487,7 @@ body { font-size: 14px; }
    list is allowed to sit beside Stages at all: `archived only` means the
    directory is gone and this row is history, not a thing you can go and look
    at. Rendered in the danger colour not because it is bad - it is the normal,
-   correct end state of a rung - but because a reader who misses it will go
+   correct end state of a run - but because a reader who misses it will go
    looking for a directory that is not there. */
 .arc-body-inner { padding: 2px 0; }
 .arc-grading + .arc-grading {
@@ -644,10 +644,10 @@ code { color: var(--muted); font-size: 12px; }
 .smoke.none { color: var(--muted); }
 
 /* -- the stagehand run marker -------------------------------------------- */
-/* Quieter than a rung card and dashed, because it is a record of what somebody
+/* Quieter than a run card and dashed, because it is a record of what somebody
    LAUNCHED rather than a reading of what a run is doing. The one time it is
    allowed to shout is a launch that died - and that is the case where there is
-   no rung card to look at instead. */
+   no run card to look at instead. */
 .card.launch { background: var(--bg-2); border-style: dashed; }
 .card.launch > h3 { color: var(--faint); }
 .launch-row { color: var(--muted); font-size: 12px; }

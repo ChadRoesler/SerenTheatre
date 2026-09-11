@@ -43,23 +43,38 @@ pytest.importorskip(
     reason="[stagehand] not installed, so Backstage does not mount and there "
            "is no eval endpoint to test")
 
-from seren_theatre import backstage, sources, stagehand  # noqa: E402
+from seren_theatre import backstage, manifest, sources, stagehand  # noqa: E402
 from seren_theatre.app import create_app  # noqa: E402
 from seren_theatre.config import StageConfig, TheatreConfig  # noqa: E402
 from seren_theatre.evalreport import EVAL_REPORT_NAME  # noqa: E402
 
-RUNG = "msmoe_run_0.5B"
-FINAL = "fraunkenstein_agent_final"
+RUN = "msmoe_run_0.5B"
+
+# THE TRAINED-MOE DIRECTORY, taken from the table rather than typed. Typing it
+# is what made this file lie: it said "fraunkenstein_agent_final", a directory
+# ms-moe-maker stopped writing during the decomposition, so every test in here
+# passed against a shape that no real run produces. The fixture and the code
+# agreed with each other and neither agreed with the builder.
+#
+# tests/test_artifact_names.py is what actually pins the vocabulary to
+# ms_moe_maker.run.stages; this just stops the eval tests inventing a third.
+FINAL = next(p for name, p, _m in sources._STAGES
+             if name == sources.FINAL_STAGE)
 
 
 def _stage_with_a_built_model(tmp_path: Path, *, built: bool = True) -> Path:
     stage = tmp_path / "stage"
-    rung = stage / RUNG
-    rung.mkdir(parents=True)
-    # looks_like_rung() wants a manifest or rung-shaped artifacts.
-    (rung / "run_manifest.json").write_text("{}", encoding="utf-8")
+    run = stage / RUN
+    run.mkdir(parents=True)
+    # looks_like_run() wants a manifest or run-shaped artifacts - and the
+    # MANIFEST NAME, not a plausible-looking one. This wrote
+    # "run_manifest.json", which Theatre does not read, so with built=False the
+    # run failed looks_like_run entirely and the 409 test below was passing
+    # for "no such run" rather than for "nothing to evaluate here". Two
+    # different refusals wearing one status code, in my own test.
+    (run / manifest.MANIFEST_NAME).write_text("{}", encoding="utf-8")
     if built:
-        final = rung / FINAL
+        final = run / FINAL
         final.mkdir()
         (final / "config.json").write_text("{}", encoding="utf-8")
     return stage
@@ -111,16 +126,16 @@ class TestWhatCountsAsSomethingToEvaluate:
     build that exited non-zero for want of llama.cpp has a perfectly evaluable
     MoE; and a success whose output directory moved offers a button that only
     409s. eval's own CLI asks whether the trained MoE is on disk, so this asks
-    the same question from the same table the rung scan reads.
+    the same question from the same table the run scan reads.
     """
 
     def test_a_trained_moe_is_evaluable(self, tmp_path):
         stage = _stage_with_a_built_model(tmp_path)
-        assert sources.evaluable(stage / RUNG)["ok"]
+        assert sources.evaluable(stage / RUN)["ok"]
 
-    def test_a_rung_with_no_moe_is_not_and_says_why(self, tmp_path):
+    def test_a_run_with_no_moe_is_not_and_says_why(self, tmp_path):
         stage = _stage_with_a_built_model(tmp_path, built=False)
-        verdict = sources.evaluable(stage / RUNG)
+        verdict = sources.evaluable(stage / RUN)
         assert not verdict["ok"]
         assert FINAL in verdict["reason"]
         assert "Build first" in verdict["reason"]
@@ -129,8 +144,8 @@ class TestWhatCountsAsSomethingToEvaluate:
         """The directory existing is not the model existing - a stitch that
         died halfway leaves the folder and no config.json."""
         stage = _stage_with_a_built_model(tmp_path, built=False)
-        (stage / RUNG / FINAL).mkdir()
-        assert not sources.evaluable(stage / RUNG)["ok"]
+        (stage / RUN / FINAL).mkdir()
+        assert not sources.evaluable(stage / RUN)["ok"]
 
     def test_nothing_to_evaluate_is_a_409_that_explains_itself(self, tmp_path):
         stage = _stage_with_a_built_model(tmp_path, built=False)
@@ -138,15 +153,60 @@ class TestWhatCountsAsSomethingToEvaluate:
         _fake_builder(_venv(tmp_path), "exit 0\n")
         r = _post(cfg, {"name": "r.yaml"})
         assert r.status_code == 409
-        assert "Build first" in str(r.json()["detail"])
+        detail = str(r.json()["detail"])
+        assert "Build first" in detail
+        # WHICH REFUSAL, not just that one happened. Both 409 branches end with
+        # "Build first." - the stage-level one and evaluable()'s - so asserting
+        # only that phrase cannot tell "this stage has no built run" from "the
+        # run you named has no MoE". That is the overloaded-exit-code problem
+        # wearing a status message, and this test was sitting on the ambiguity.
+        assert stage.name in detail
 
-    def test_a_named_rung_that_is_not_built_names_itself(self, tmp_path):
+    def test_a_named_run_that_is_not_built_names_itself(self, tmp_path):
         stage = _stage_with_a_built_model(tmp_path, built=False)
         cfg = _cfg(tmp_path, stage)
         _fake_builder(_venv(tmp_path), "exit 0\n")
-        r = _post(cfg, {"name": "r.yaml", "rung": RUNG})
+        r = _post(cfg, {"name": "r.yaml", "run": RUN})
         assert r.status_code == 409
-        assert RUNG in str(r.json()["detail"])
+        detail = str(r.json()["detail"])
+        assert RUN in detail
+        # THE OTHER BRANCH, pinned by what only it can say: this path surfaces
+        # evaluable()'s reason, which names the directory eval measures. The
+        # stage-level refusal never mentions it.
+        assert FINAL in detail
+
+    def test_a_run_built_the_way_the_builder_builds_one_is_accepted(
+            self, tmp_path):
+        """THE WIRING TEST THIS FILE DID NOT HAVE.
+
+        Every other test here proves the endpoint agrees with `_stage_with_a_
+        built_model`, and that fixture used to spell the trained-MoE directory
+        by hand as `fraunkenstein_agent_final` - a name ms-moe-maker stopped
+        writing during the decomposition. So the whole class agreed with a
+        shape no real run produces, and the eval button would have refused
+        every genuine build on Chad's box while the suite sat green.
+
+        This builds the run from ms_moe_maker's OWN constants and asserts the
+        endpoint launches. It skips on a plain viewer install, where there is
+        no builder to quote.
+        """
+        ms = pytest.importorskip(
+            "ms_moe_maker.run.stages",
+            reason="ms-moe-maker is not installed, so there is no builder to "
+                   "quote the real artifact names from")
+        stage = tmp_path / "stage"
+        run = stage / RUN
+        run.mkdir(parents=True)
+        (run / manifest.MANIFEST_NAME).write_text("{}", encoding="utf-8")
+        final = run / ms.ARTIFACTS[ms.ROUTER]
+        final.mkdir()
+        (final / "config.json").write_text("{}", encoding="utf-8")
+
+        cfg = _cfg(tmp_path, stage)
+        _fake_builder(_venv(tmp_path), "sleep 5\n")
+        r = _post(cfg, {"name": "r.yaml"})
+        assert r.status_code == 200, r.json()
+        assert r.json()["run"] == RUN
 
 
 # ── the argv ────────────────────────────────────────────────────────────────
@@ -154,7 +214,6 @@ class TestWhatCountsAsSomethingToEvaluate:
 class TestItRunsTheEvalVerbAndInventsNoFlags:
     def test_the_verb_is_eval_not_build(self, tmp_path, monkeypatch):
         seen = {}
-        real = stagehand.run_detached
 
         def spy(recipe, **kw):
             seen.update(kw)
@@ -218,7 +277,7 @@ class TestItRunsTheEvalVerbAndInventsNoFlags:
 
 # ── the matrix ──────────────────────────────────────────────────────────────
 
-def _writes_report_then_exits(code: int, rung: Path) -> str:
+def _writes_report_then_exits(code: int, run: Path) -> str:
     """A builder that measures something and then exits `code`.
 
     The report is written BEFORE the exit, which is what the real one does and
@@ -226,7 +285,7 @@ def _writes_report_then_exits(code: int, rung: Path) -> str:
     is the point."
     """
     return ('echo "{}" > "%s"\nexit %d\n'
-            % ((rung / EVAL_REPORT_NAME), code))
+            % ((run / EVAL_REPORT_NAME), code))
 
 
 @pytest.fixture(autouse=True)
@@ -252,7 +311,7 @@ class TestAnExitCodeIsNotAStatus:
         stage = _stage_with_a_built_model(tmp_path)
         cfg = _cfg(tmp_path, stage)
         _fake_builder(_venv(tmp_path),
-                      _writes_report_then_exits(2, stage / RUNG))
+                      _writes_report_then_exits(2, stage / RUN))
         r = _post(cfg, {"name": "r.yaml"})
         assert r.status_code == 200, r.json()
         body = r.json()
@@ -263,7 +322,7 @@ class TestAnExitCodeIsNotAStatus:
         stage = _stage_with_a_built_model(tmp_path)
         cfg = _cfg(tmp_path, stage)
         _fake_builder(_venv(tmp_path),
-                      _writes_report_then_exits(3, stage / RUNG))
+                      _writes_report_then_exits(3, stage / RUN))
         r = _post(cfg, {"name": "r.yaml"})
         assert r.status_code == 200
         assert r.json()["finding"] == "unmeasurable"
@@ -281,12 +340,12 @@ class TestAnExitCodeIsNotAStatus:
     def test_a_STALE_report_does_not_vouch_for_this_run(self, tmp_path):
         """THE REASSURING-DIRECTION FAILURE, and the one worth a test of its own.
 
-        A rung evaluated last week has a report in it. Without a freshness test
+        A run evaluated last week has a report in it. Without a freshness test
         that report would make today's argparse error look like a successful
         measurement - wrong, and wrong in the direction nobody checks.
         """
         stage = _stage_with_a_built_model(tmp_path)
-        stale = stage / RUNG / EVAL_REPORT_NAME
+        stale = stage / RUN / EVAL_REPORT_NAME
         stale.write_text("{}", encoding="utf-8")
         old = time.time() - 7 * 24 * 3600
         os.utime(stale, (old, old))
@@ -314,7 +373,7 @@ class TestAnExitCodeIsNotAStatus:
         _, r = self._run(tmp_path, "sleep 5\n")
         assert r.status_code == 200
         assert r.json()["launch"] == stagehand.LAUNCH_STARTED
-        assert r.json()["rung"] == RUNG
+        assert r.json()["run"] == RUN
 
     def test_the_failure_always_carries_its_reason(self, tmp_path):
         """A status code with no explanation only moves the silence."""

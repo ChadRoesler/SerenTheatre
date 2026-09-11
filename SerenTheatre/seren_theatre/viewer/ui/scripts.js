@@ -164,7 +164,7 @@ function retick(state) {
 // with .pb-body's scrollTop restored. Cheapest correct fix for "you could be
 // mid review near the bottom then BOOP, up to the top you go."
 //
-// Keyed by rung path AND build_id, not build_id alone: two stages can be
+// Keyed by run path AND build_id, not build_id alone: two stages can be
 // running the same recipe, and one panel being adopted into the other's slot
 // would leave the second empty.
 //
@@ -329,7 +329,7 @@ function renderSteps(key, m, log) {
             s.status === 'running' ? renderStepLog(log) : '',
         ].filter(Boolean).join('');
         // The running step opens and finished ones stay shut - the same habit
-        // the rung cards already had, one level down. An explicit click still
+        // the run cards already had, one level down. An explicit click still
         // beats the default, both ways, via the '!' key in COLLAPSED.
         const k = `step:${key}:${s.id}`;
         const open = s.status === 'running';
@@ -366,7 +366,7 @@ function renderSteps(key, m, log) {
 // wrote 3s ago - and let the reader draw it. The server decided the state
 // (sources.activity_state); this only says what the numbers were.
 // (4) Grammar, not decoration. "log wrote 3s ago" reads fine; "artifacts wrote
-// 3s ago" does not, because sources.rung_activity's reading is a DIRECTORY - a
+// 3s ago" does not, because sources.run_activity's reading is a DIRECTORY - a
 // set of files, and often a set of one that is itself a subdirectory. A role
 // not named here keeps the original phrasing, so a future evidence source shows
 // up readable instead of requiring an edit here first.
@@ -399,7 +399,7 @@ function renderQuiet(r) {
             transitions, and a fine-tune stage runs for about an hour. Something
             in this directory is still being written.${line}</div>`;
     }
-    // "not the log" alone stopped being the whole story the moment the rung
+    // "not the log" alone stopped being the whole story the moment the run
     // directory became evidence: on a hand-run build there IS no log, and the
     // sentence has to name what was actually looked at.
     return `<div class="err">Nothing here has been written for
@@ -579,10 +579,10 @@ function pbBlock(label, keys, res, knobs) {
         + `</dl></div>`;
 }
 
-function renderPlaybill(m, rungPath) {
+function renderPlaybill(m, runPath) {
     // (2) The panel is immutable for the life of a build. `key` is what decides
     // whether the live node gets adopted instead of rebuilt - see renderStages.
-    const key = m.build_id ? `${rungPath} ${m.build_id}` : '';
+    const key = m.build_id ? `${runPath} ${m.build_id}` : '';
     if (key && KEPT_PLAYBILLS.has(key)) {
         // A placeholder. renderStages swaps the existing <aside> - and its
         // scroll position - back into this slot.
@@ -695,7 +695,7 @@ function num(v, dp) {
 
 // Did this eval measure the model that is on disk NOW?
 //
-// THE STALE CASE IS THE ENTIRE POINT OF THIS BLOCK. A rebuilt rung keeps its
+// THE STALE CASE IS THE ENTIRE POINT OF THIS BLOCK. A rebuilt run keeps its
 // old eval report: valid JSON, confident numbers, about a model that no longer
 // exists. Shown without a word it is the C# 0/10 failure wearing a new coat -
 // nothing looks wrong, and the reader concludes something about a thing that
@@ -710,7 +710,7 @@ function resProvenance(ev) {
     if (ev.provenance === 'stale') {
         return `<div class="res-prov stale"><b>These numbers are about an
             earlier build.</b> The eval graded
-            <code>${escapeHtml(ev.build_id)}</code>; this rung now holds a
+            <code>${escapeHtml(ev.build_id)}</code>; this run now holds a
             different one. Nothing here is wrong — it is simply not about
             what is on disk. Re-run <code>eval</code> to replace it.</div>`;
     }
@@ -1032,12 +1032,12 @@ function renderSmoke(r) {
 // `.stagehand-run.json` says a build was LAUNCHED from this stage directory:
 // the command line, the recipe, the pid, when, and whether the child survived
 // being started. It says NOTHING about progress and this panel must not imply
-// it - the manifest on each rung card keeps that job, and two opinions about
+// it - the manifest on each run card keeps that job, and two opinions about
 // what a run is doing is how a dashboard starts disagreeing with itself.
 //
-// It sits above the rung cards rather than inside one because the marker is a
+// It sits above the run cards rather than inside one because the marker is a
 // property of the stage directory, and because a launch that died on arrival
-// never creates a rung at all: inside a rung card is precisely where it would
+// never creates a run at all: inside a run card is precisely where it would
 // be invisible in the case that matters most.
 function renderLaunch(s) {
     if (s.launch_error) {
@@ -1068,7 +1068,7 @@ function renderLaunch(s) {
                 : `<span class="badge unknown">${escapeHtml(
                     L.launch_state || 'outcome not recorded')}</span>`));
 
-    // A launch that died on arrival leaves nothing else behind - no rung, no
+    // A launch that died on arrival leaves nothing else behind - no run, no
     // manifest, often not even a log - so this is the one thing on the page
     // that gets to shout. The tail is the child's dying words, and it is the
     // reason the panel is worth having rather than just a badge.
@@ -1121,14 +1121,76 @@ function renderLaunch(s) {
            ${escapeHtml(String(L.schema_version))}; this viewer reads schema
            ${escapeHtml(String(L.understands_schema))}. Anything the two do not
            share is simply absent above.</div>` : '';
+    // ── WHAT THE BUILD SAID ABOUT ITSELF ────────────────────────────────────
+    //
+    // The marker above is STAGEHAND's account: what it launched, and whether the
+    // child survived. This is the BUILDER's, read from the events file the
+    // marker names - and it is the only place a build states its own absolute
+    // run directory, because the manifest deliberately carries none.
+    //
+    // Which makes it the one thing that can say WHICH DIRECTORY the process on
+    // this card is writing into. Theatre walked past it for a long time: the
+    // same file was being opened, scanned for errors, and closed.
+    //
+    // STRICTLY "WHERE AND UNDER WHAT". No status, no stage, no progress - the
+    // manifest keeps that job and this must never become a second opinion about
+    // what a run is doing.
+    const R = L.run;
+    const said = !R ? '' : (() => {
+        const where = L.run_path
+            ? `<div class="launch-row">writing into <span class="path">${
+                breakablePath(L.run_path)}</span>${
+                R.run_dir && R.run_dir !== L.run_path
+                    ? ` <span class="hint">(the builder calls it <span
+                        class="path">${breakablePath(R.run_dir)}</span>)</span>`
+                    : ''}</div>`
+            : (R.run_dir
+                ? `<div class="launch-row">the build reports <span class="path">${
+                    breakablePath(R.run_dir)}</span><span class="hint"> — no
+                    directory of that name is visible here, so either it is on
+                    another box without a <code>remote_prefix</code> set for this
+                    stage, or it has been removed.</span></div>`
+                : '');
+        // THE ENVIRONMENT THIS BOX IMPOSED, which on Jetson is where the
+        // interesting failures live: LD_LIBRARY_PATH, the CUDA compat shim, an
+        // altinstall python. Counted rather than dumped - a dozen variables in
+        // a card is a wall, and the count plus a hover is what makes somebody
+        // look when the number is surprising.
+        const env = R.env_applied && Object.keys(R.env_applied).length
+            ? `<div class="launch-row hint" title="${escapeHtml(
+                Object.keys(R.env_applied).sort().join(', '))}">${
+                Object.keys(R.env_applied).length} environment
+                ${Object.keys(R.env_applied).length === 1
+                    ? 'variable' : 'variables'} applied by this box</div>`
+            : '';
+        const ident = [
+            R.name ? `recipe <code>${escapeHtml(R.name)}</code>` : null,
+            R.size ? `size <code>${escapeHtml(R.size)}</code>` : null,
+            (R.experts && R.experts.length)
+                ? `${R.experts.length} expert${
+                    R.experts.length === 1 ? '' : 's'}` : null,
+        ].filter(Boolean).join(' · ');
+        return where + env + (ident
+            ? `<div class="launch-row hint">${ident}</div>` : '');
+    })();
+
+    // The build ran without --json, or predates the event. Absent, said as
+    // absent, and deliberately quiet: this is the normal state for a build a
+    // person started by hand in a terminal.
+    const mute = (!R && L.launched === true)
+        ? `<div class="launch-row hint">This build is not emitting structured
+           events, so which directory it is writing into is not something
+           Theatre can state. A build launched from Backstage does emit
+           them.</div>` : '';
+
     // Absent is not the same as fine. Saying so is the entire house style.
     const unsure = (L.launched === null)
         ? `<div class="launch-row hint">This marker does not record whether the
            launch survived — which is not the same as recording that it
            did.</div>` : '';
 
-    // Named for the STAGE it belongs to. When rungs exist this panel sits above
-    // cards titled by rung, and an unlabelled "stagehand" heading in that stack
+    // Named for the STAGE it belongs to. When runs exist this panel sits above
+    // cards titled by run, and an unlabelled "stagehand" heading in that stack
     // does not say which directory it is a reading of.
     return `<div class="card launch"><h3>${escapeHtml(s.name)} · stagehand${badge}</h3>
         ${L.command_line
@@ -1141,16 +1203,16 @@ function renderLaunch(s) {
             ${acts ? `<div class="launch-row"${
                 tickData(`launch-acts:${s.name}`, acts)}>${
                 escapeHtml(acts)}</div>` : ''}
-            ${unsure}${schema}
+            ${said}${mute}${unsure}${schema}
         </div></div>`;
 }
 
-function renderRung(r, log) {
+function renderRun(r, log) {
     const m = r.manifest;
     if (m) {
         // The state the SERVER decided, which may have had the log's vote -
         // see sources.activity_state. Falling back to the manifest-only word
-        // when a payload has no rung-level `state`, so an older server or a
+        // when a payload has no run-level `state`, so an older server or a
         // non-current run still renders.
         const state = r.state || m.state;
         const badge = `<span class="badge ${state}">${escapeHtml(state)}</span>`;
@@ -1223,32 +1285,44 @@ function stagesHtml(state) {
                 <div class="card-body"><div class="err">Directory not found:
                 <code>${escapeHtml(s.path)}</code></div></div></div>`;
         }
-        // The launch panel goes ABOVE the rung cards, and it is rendered
-        // even when there are no rungs - that is exactly the shape a build
+        // The launch panel goes ABOVE the run cards, and it is rendered
+        // even when there are no runs - that is exactly the shape a build
         // that died on arrival leaves behind, and "No runs here yet" on its
         // own is a true sentence that tells you nothing about why.
         const launch = renderLaunch(s);
-        if (!s.rungs.length) {
-            return launch + `<div class="card"><h3>${escapeHtml(s.name)}</h3>
-                <div class="sub"><code>${escapeHtml(s.path)}</code></div>
-                <div class="card-body"><div class="empty">No runs here yet.</div>
-                </div></div>`;
+
+        // ONE RUN ON STAGE, and only if there is something to DO about it. The
+        // server decides which (sources._wants_the_stage) so the page and
+        // /api/state cannot disagree about whether a run is over.
+        if (s.on_stage) {
+            return launch + renderRun(s.on_stage, (s.logs || [])[0]);
         }
-        // ONE RUN ON STAGE: the current one, or the most recent. The
-        // server ordered them and counted the rest (sources.order_rungs),
-        // so the page and /api/state agree about which is current.
+
+        // ── NOTHING ON STAGE IS TWO DIFFERENT SENTENCES ──────────────────
         //
-        // The earlier runs are still in the payload and the count is SHOWN.
-        // A viewer that silently drops data is the thing this codebase
-        // keeps fixing - and the count is the seam a Previous Shows
-        // section lands on later.
-        const earlier = s.earlier || 0;
-        const seam = earlier
-            ? `<div class="earlier">${earlier} earlier run${
-                earlier === 1 ? '' : 's'} in <code>${escapeHtml(s.path)}</code>
-               — not shown here, and still on <code>/api/state</code>.</div>`
-            : '';
-        return launch + renderRung(s.rungs[0], (s.logs || [])[0]) + seam;
+        // "No runs here yet" was the only one this used to say, and it said it
+        // over a stage whose four builds had all finished and been archived -
+        // because a harvested run whose directory was reclaimed leaves no run
+        // to count. A viewer telling somebody nothing was ever built here, with
+        // the history one tab away, is this codebase's oldest failure in its
+        // newest costume.
+        //
+        // So the empty state says which kind of empty it is, and where the rest
+        // went. `finished_here` is what this scan found and archive.total is
+        // what outlived it; either one means there is history to look at.
+        const doneHere = s.finished_here || 0;
+        const archived = (ARCHIVE && ARCHIVE.total) || 0;
+        const history = doneHere || archived;
+        const body = history
+            ? `<div class="empty"><b>Nothing cooking.</b><br>
+               ${doneHere ? `${doneHere} finished run${doneHere === 1 ? '' : 's'}
+               still on disk here` : 'Every run here has been archived'}${
+                   archived ? ` — ${archived} in <b>Previous Surgeries</b>`
+                            : ''}.</div>`
+            : `<div class="empty">No runs here yet.</div>`;
+        return launch + `<div class="card"><h3>${escapeHtml(s.name)}</h3>
+            <div class="sub"><code>${escapeHtml(s.path)}</code></div>
+            <div class="card-body">${body}</div></div>`;
     }).join('');
 }
 
@@ -1356,22 +1430,22 @@ async function load() {
         const state = await api('/api/state');
         clearError();
 
-        const rungs = state.stages.flatMap((s) => s.rungs || []);
+        const runs = state.stages.flatMap((s) => s.runs || []);
         const logs = state.stages.flatMap((s) => s.logs || []);
-        const running = rungs.filter(
+        const running = runs.filter(
             (r) => r.manifest && r.manifest.state === 'running').length;
 
         // The pill answers a question you actually have: how many runs are
         // here, and is anything moving?
         $('runs-pill').textContent = running
-            ? `${rungs.length} runs · ${running} live`
-            : `${rungs.length} run${rungs.length === 1 ? '' : 's'}`;
+            ? `${runs.length} runs · ${running} live`
+            : `${runs.length} run${runs.length === 1 ? '' : 's'}`;
         $('age-pill').textContent = `${state.took_ms} ms`;
         $('age-pill').title = `server read the disk in ${state.took_ms} ms`;
 
         // Counts on the tabs, so an empty tab is distinguishable from a broken
         // one WITHOUT clicking it.
-        $('count-stages').textContent = rungs.length ? `(${rungs.length})` : '';
+        $('count-stages').textContent = runs.length ? `(${runs.length})` : '';
         $('count-logs').textContent = logs.length ? `(${logs.length})` : '(0)';
 
         // (1) The whole point. During a 58-minute fine-tune the manifest is not
@@ -1422,11 +1496,11 @@ load().then(schedule);
 // promises` - every reading prefers what a stat says to what was claimed. An
 // archived row is a claim with no disk left to check it against, which is a
 // perfectly good thing to show and a different KIND of fact. Rendering it as
-// though it were a rung would have the viewer assert that a directory exists
+// though it were a run would have the viewer assert that a directory exists
 // when it does not, which is the confidently-wrong failure this service is
 // built against, wearing its newest costume.
 //
-// So `rung_present` gets a badge, not a footnote.
+// So `run_present` gets a badge, not a footnote.
 
 let ARCHIVE = null;
 
@@ -1444,7 +1518,7 @@ function arcVerdict(s) {
 // renderers for one report would eventually disagree about what a number
 // means, on screen, in a place nobody is checking. The archived row carries the
 // original document and the server re-projects it on read, so what arrives here
-// is exactly the shape a live rung produces.
+// is exactly the shape a live run produces.
 function arcGrading(g) {
     const v = g.view;
     if (!v) {
@@ -1466,19 +1540,75 @@ function arcGrading(g) {
 }
 
 function arcSurgery(s) {
-    // THE ONE THAT MATTERS. A row whose rung is gone is history; a row whose
-    // rung is there can still be opened. Saying which is the whole reason this
+    // THE ONE THAT MATTERS. A row whose run is gone is history; a row whose
+    // run is there can still be opened. Saying which is the whole reason this
     // list is allowed to exist beside Stages.
-    const gone = !s.rung_present;
-    const where = gone
-        ? `<span class="badge failed" title="the run directory has been deleted">archived only</span>`
-        : `<span class="badge disk">on disk</span>`;
+    // THREE STATES, AND THE THIRD IS THE POINT. `gone` used to carry two
+    // completely different facts: "I looked and it is not there" and "I could
+    // not look". A share that hiccups, or a builder that was retired, made
+    // every row on it announce a deletion that never happened - and a red
+    // "archived only" badge over a model that is sitting safely on an
+    // unmounted disk is the confidently-wrong failure in its newest costume.
+    //
+    // So `unknown` gets its own rendering and it is deliberately NOT red:
+    // nothing is wrong, Theatre simply cannot see that far right now. A boolean
+    // consumer would read it as falsy and paint the deletion, which is exactly
+    // why the state is read here and `run_present` is not.
+    // THE FALLBACK READS THE OLD BOOLEAN AT ITS OLD MEANING. `run_state` is
+    // filled in by reconcile on every read, so this branch is only reached by a
+    // payload that skipped it - and there the boolean said "gone", so that is
+    // what it is rendered as. Re-interpreting it as `unknown` would be this
+    // viewer inventing doubt the server never expressed.
+    const state = s.run_state || (s.run_present ? 'present' : 'gone');
+    const where = state === 'present'
+        ? `<span class="badge disk">on disk</span>`
+        : (state === 'gone'
+            ? `<span class="badge failed" title="the run directory has been deleted">archived only</span>`
+            : `<span class="badge disk" title="the directory could not be checked - the stage is not mounted, or is no longer configured">not reachable</span>`);
+    // WHERE IT LIVES ON THE BUILDER, for the person who is about to go and look.
+    //
+    // Only shown when it differs from the path Theatre read, because on a local
+    // stage the two are the same string and printing it twice is noise. Comes
+    // from the ROW, computed at harvest - today's config may map that box
+    // somewhere else, or not at all, and the row's own frame is the only one
+    // that was ever true for it.
+    const remote = s.builder_path && s.builder_path !== s.run_path
+        ? `<div class="hint">on the builder: <span class="path">${
+            breakablePath(s.builder_path)}</span></div>`
+        : '';
+    // WHAT BUILT IT, and whether that is still knowable.
+    //
+    // `build_id` is a digest of the resolved config, so it can VERIFY a rebuild
+    // produced the same model. It cannot hand you the thing to run. The recipe
+    // text is what makes a rebuild possible at all, and it was the one input
+    // this archive never kept.
+    //
+    // FOUR STATES DRAWN AS THREE, on purpose. "unreadable" is the only one that
+    // is somebody's problem, so it is the only one that gets a warning badge.
+    // "absent" is a plain fact about older runs and reads as one. And the empty
+    // state - nothing was attempted, which is every row harvested before this
+    // existed - draws NOTHING, because a note on every historical row would be
+    // noise dressed as diligence.
+    const recipe = {
+        captured: s.recipe_blob
+            ? `<span title="sha256 ${escapeHtml(s.recipe_blob)}">recipe kept `
+              + `<code>${escapeHtml(s.recipe_blob.slice(0, 12))}</code></span>`
+            : `<span class="hint">recipe kept</span>`,
+        absent: `<span class="hint" title="this run has no recipe beside its `
+              + `manifest — built before ms-moe-maker preserved one">`
+              + `no recipe kept</span>`,
+        unreadable: `<span class="badge failed" title="the recipe is on disk `
+              + `and could not be stored, so the record is incomplete">`
+              + `recipe unreadable</span>`,
+    }[s.recipe_state] || '';
+
     const sub = [
         s.started ? `executed ${escapeHtml(fmtWhen(s.started))}` : null,
         s.stage ? `stage <code>${escapeHtml(s.stage)}</code>` : null,
         s.build_id ? `<code title="digest of the resolved config">${
             escapeHtml(s.build_id)}</code>` : null,
-        `<span class="path">${breakablePath(s.rung_path || '')}</span>`,
+        recipe || null,
+        `<span class="path">${breakablePath(s.run_path || '')}</span>`,
     ].filter(Boolean).join(' · ');
 
     // The compare tick. On the card rather than in a separate picker, because
@@ -1502,10 +1632,107 @@ function arcSurgery(s) {
         + `Built, never evaluated — so there is nothing here to read, which is `
         + `different from a run that measured badly.</div>`;
 
-    const body = `<div class="arc-body-inner">${gate}${none}${gradings}</div>`;
+    const body = `<div class="arc-body-inner">${remote}${gate}${none}${gradings}</div>`;
     return card(`arc:${s.run_key}`, escapeHtml(s.name || s.run_key),
                 `${arcVerdict(s)} ${where} ${pickBox}`, sub, body, true);
 }
+
+function sweepHtml(d) {
+    if (!d) return '';
+    const F = d.findings || [];
+    const skipped = d.skipped || {};
+
+    // WHAT WAS LOOKED AT, ALWAYS. "No findings" and "nothing was comparable"
+    // are different sentences, and a panel that cannot tell them apart is
+    // lying by omission about runs it never examined.
+    const scope = [
+        `${d.runs} run${d.runs === 1 ? '' : 's'}`,
+        `${d.groups} experiment${d.groups === 1 ? '' : 's'}`,
+        `${d.pairs} pair${d.pairs === 1 ? '' : 's'} examined`,
+    ].join(' · ');
+    const short = (d.archive_total != null && d.archive_total > d.runs)
+        ? `<div class="hint">This swept the ${d.runs} most recent of
+           ${d.archive_total} archived runs, so it says nothing about the
+           rest.</div>` : '';
+    const capped = d.truncated
+        ? `<div class="cmp-verdict bad"><b>The sweep stopped early</b> at
+           ${d.max_pairs} pairs, so these findings are partial — there are
+           combinations here it never examined.</div>` : '';
+
+    const why = [
+        skipped.several_inputs
+            ? `${skipped.several_inputs} pair${
+                skipped.several_inputs === 1 ? '' : 's'} changed several inputs`
+            : null,
+        skipped.not_evaluated
+            ? `${skipped.not_evaluated} involved a run that was never evaluated`
+            : null,
+        skipped.incomparable
+            ? `${skipped.incomparable} were not the same experiment` : null,
+    ].filter(Boolean);
+
+    // THE TABLE IS THE INSTRUMENT. Per knob: how many pairs tested it, how many
+    // moved anything. "target_steps is load-bearing and lr is provably flat in
+    // this history" is a design claim; a list of deltas is a pile of numbers.
+    const table = (d.by_field || []).length
+        ? `<h4>By knob</h4><table class="cmp"><thead><tr><th>input</th>
+           <th>pairs</th><th>moved</th><th>largest</th></tr></thead><tbody>${
+            d.by_field.map((e) => `<tr><td><code title="${escapeHtml(
+                (e.knob && e.knob.summary) || '')}">${escapeHtml(e.field)}</code></td>
+                <td>${e.pairs}</td>
+                <td>${e.moved
+                    ? `<span class="badge idle">${e.moved}</span>`
+                    : '<span class="hint">none</span>'}</td>
+                <td>${e.largest ? num(e.largest) : '<span class="hint">flat</span>'}</td>
+                </tr>`).join('')}</tbody></table>` : '';
+
+    const rows = F.map((f) => {
+        const when = `<span class="hint">${escapeHtml(f.a_name || f.a)} →
+            ${escapeHtml(f.b_name || f.b)}</span>`;
+        if (f.kind === 'nondeterminism') {
+            // FIRST AND LOUDEST. It is the floor under every delta below it: a
+            // knob that moved enrichment by 0.04 is not a result if rerunning
+            // the same config moves it by 0.09.
+            return `<div class="cmp-verdict bad"><b>Same configuration,
+                different numbers.</b> ${when}<br>${f.moved.map((m) =>
+                `<code>${escapeHtml(m.label)}</code> ${cmpDelta(m.delta)}`)
+                .join(' · ')}<br><span class="hint">Nothing in the fingerprint
+                differs, so this is a measurement of how repeatable the pipeline
+                is — and the floor under every finding below.</span></div>`;
+        }
+        const what = `<code>${escapeHtml(String(f.field))}</code>
+            <code>${pbValue(f.a_value)}</code> → <code>${pbValue(f.b_value)}</code>`;
+        if (f.flat) {
+            // A knob that moved nothing is a RESULT. It is the one you get to
+            // stop turning, and an instrument that only reports movement is a
+            // movement detector.
+            return `<div class="cmp-verdict"><b>No effect:</b> ${what}
+                ${when}<br><span class="hint">Every measured dimension held.
+                That is a finding about this knob, not a missing
+                one.</span></div>`;
+        }
+        return `<div class="cmp-verdict ok"><b>One input changed:</b> ${what}
+            ${when}<br>${f.moved.map((m) =>
+                `<code>${escapeHtml(m.label)}</code> ${cmpDelta(m.delta)}`)
+                .join(' · ')}<br><span class="hint">Still evidence rather than
+            proof — a seed and a corpus draw move underneath every run.</span></div>`;
+    }).join('');
+
+    const none = F.length ? '' : `<div class="empty"><b>Nothing here is
+        attributable yet.</b><br>${why.length
+            ? `Of the pairs examined, ${why.join(', ')}.`
+            : 'No two runs in this history differ by exactly one input.'}
+        <br><br>Changing one thing at a time is what makes a history
+        answerable.</div>`;
+
+    return `<aside class="compare"><h4>What this history proves</h4>
+        <div class="hint">${escapeHtml(scope)}</div>${short}${capped}
+        ${none}${rows}${table}
+        ${F.length && why.length
+            ? `<div class="hint">Not listed: ${escapeHtml(why.join(', '))}.</div>`
+            : ''}</aside>`;
+}
+
 
 function archiveHtml(state) {
     if (!state) return '<div class="empty">Loading the archive…</div>';
@@ -1515,8 +1742,8 @@ function archiveHtml(state) {
             ${escapeHtml(state.error || 'no reason given')}<br><br>
             Harvest copies the manifest, the eval report and the gate report
             out of each finished run so the record outlives the run directory —
-            an eval report is ten kilobytes and the rung holding it is forty-five
-            gigabytes, and deleting that rung is the normal thing to do.
+            an eval report is ten kilobytes and the run holding it is forty-five
+            gigabytes, and deleting that run is the normal thing to do.
             Turn it on with <code>archive.enabled</code>.</div>`;
     }
     const rows = state.surgeries || [];
@@ -1712,7 +1939,9 @@ function compareHtml(d) {
         ${escapeHtml(s.name || s.run_key)}
         ${s.build_id ? `<code>${escapeHtml(s.build_id)}</code>` : ''}
         <span class="hint">${s.started ? escapeHtml(fmtWhen(s.started)) : ''}${
-            s.rung_present ? '' : ' · archived only'}</span></div>`;
+            (s.run_state || (s.run_present ? 'present' : 'gone')) === 'present'
+                ? '' : ((s.run_state || 'gone') === 'gone'
+                    ? ' · archived only' : ' · not reachable')}</span></div>`;
 
     return `<aside class="compare"><h4>A vs B</h4>
         <div class="cmp-heads">${side(d.a, 'A')}${side(d.b, 'B')}</div>
@@ -1960,7 +2189,7 @@ async function loadBackstage() {
         // craft form built from a stale `describe` looks exactly like a craft
         // form built from the right one. `source` is printed beside it because
         // a config that is being IGNORED must not read as a config that was
-        // honoured - the same reason a rung says whether its state came from
+        // honoured - the same reason a run says whether its state came from
         // the manifest or from file activity.
         const pl = BACKSTAGE.pipeline || {};
         const plHtml = pl.command
@@ -2344,6 +2573,17 @@ document.addEventListener('click', async (e) => {
                     encodeURIComponent(b)}`));
         } catch (err) {
             $('cmp-body').innerHTML =
+                `<div class="err">${escapeHtml(String(err.message || err))}</div>`;
+        }
+        return;
+    }
+    if (id === 'cmp-sweep') {
+        $('sweep-body').innerHTML = '<div class="empty">sweeping…</div>';
+        try {
+            $('sweep-body').innerHTML = sweepHtml(
+                await api('/api/archive/sweep'));
+        } catch (err) {
+            $('sweep-body').innerHTML =
                 `<div class="err">${escapeHtml(String(err.message || err))}</div>`;
         }
         return;

@@ -38,7 +38,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def run_dir(tmp_path):
-    """A rung the scanner will recognise, with a manifest carrying a build_id."""
+    """A run the scanner will recognise, with a manifest carrying a build_id."""
     from ms_moe_maker.run import manifest as writer_mf
     d = tmp_path / "msmoe_run_0.5B"
     d.mkdir()
@@ -76,9 +76,9 @@ def _report():
 
 
 def test_the_writers_file_reaches_the_viewers_scan(run_dir):
-    """The whole path: writer -> disk -> scan_rung -> the dict /api/state sends.
+    """The whole path: writer -> disk -> scan_run -> the dict /api/state sends.
 
-    `scan_rung` rather than `read_eval` on purpose. Testing the reader alone
+    `scan_run` rather than `read_eval` on purpose. Testing the reader alone
     would have passed for the entire life of the eval sidecar, whose reader is
     also perfect and also never called by anything.
     """
@@ -87,7 +87,7 @@ def test_the_writers_file_reaches_the_viewers_scan(run_dir):
     save_eval_report(_report(), run_dir / EVAL_REPORT_NAME,
                      build_id="cafebabe0001")
 
-    scanned = sources.scan_rung(run_dir)
+    scanned = sources.scan_run(run_dir)
     assert scanned["eval"] is not None, (
         "the writer put a report on disk and the scanner did not pick it up - "
         "which is exactly how a run that WAS evaluated renders as one that "
@@ -115,7 +115,7 @@ def test_the_writers_file_reaches_the_viewers_scan(run_dir):
     assert ev["undiscriminating"] == ["markdown"]
 
 
-def test_a_rebuilt_rung_shows_its_old_eval_as_stale(run_dir):
+def test_a_rebuilt_run_shows_its_old_eval_as_stale(run_dir):
     """The one thing this must never get wrong.
 
     Same file, a manifest that has moved on. Valid JSON, real numbers, a model
@@ -130,7 +130,7 @@ def test_a_rebuilt_rung_shows_its_old_eval_as_stale(run_dir):
     writer_mf.write(run_dir, writer_mf.Manifest(name=run_dir.name,
                                                 build_id="d1fferent0002"))
 
-    assert sources.scan_rung(run_dir)["eval"]["provenance"] == rr.STALE
+    assert sources.scan_run(run_dir)["eval"]["provenance"] == rr.STALE
 
 
 def test_the_gate_report_the_builder_writes_reaches_the_scan(run_dir):
@@ -147,7 +147,7 @@ def test_the_gate_report_the_builder_writes_reaches_the_scan(run_dir):
     (run_dir / GATE_REPORT_NAME).write_text(
         json.dumps(rep.to_dict(), indent=2), encoding="utf-8")
 
-    gate = sources.scan_rung(run_dir)["gate"]
+    gate = sources.scan_run(run_dir)["gate"]
     assert gate is not None and gate["status"] == "ok"
     assert gate["cross_loss"]["python"]["rust"] == 3.40
     # UNMEASURED SURVIVES AS ITS OWN LIST. Folded into findings it would read
@@ -157,6 +157,6 @@ def test_the_gate_report_the_builder_writes_reaches_the_scan(run_dir):
 
 
 def test_an_unevaluated_run_stays_quiet_all_the_way_through(run_dir):
-    scanned = sources.scan_rung(run_dir)
+    scanned = sources.scan_run(run_dir)
     assert scanned["eval"] is None and scanned["gate"] is None
     assert scanned["eval_error"] is None and scanned["gate_error"] is None

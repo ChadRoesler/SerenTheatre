@@ -128,7 +128,40 @@ def test_stage_defaults_match_the_ladder_layout(tmp_path, monkeypatch):
     monkeypatch.setenv("SEREN_THEATRE_STAGE", str(tmp_path / "lab"))
     stage = load_config().stages[0]
     assert stage.logs == ["*.log"]
-    assert "dryrun_*" in stage.rungs and "*_agent_*" in stage.rungs
+    # EMPTY MEANS LOOK. The default used to be three globs, and a default glob
+    # list is a promise the person has to keep - break it and the run is not
+    # merely undrawn, it is unarchived. See StageConfig.runs.
+    assert stage.runs == []
+    # Deep enough for a `<name>/{size}` output root, which is the shape
+    # ms-moe-maker's own recipes use.
+    assert stage.run_depth >= 2
+
+
+def test_an_unreadable_run_depth_falls_back_rather_than_disabling_discovery(
+        tmp_path, monkeypatch):
+    """`run_depth: ""` must not coerce to 0.
+
+    Zero switches discovery off and the stage renders empty - a typo that
+    silently stops archiving every future run, which is the exact failure this
+    default was changed to remove. A value that cannot be read is the default.
+    """
+    from seren_theatre.config import StageConfig
+
+    for bad in ("", None, "deep", 0, -1, [1]):
+        stage = StageConfig.from_dict({"path": str(tmp_path),
+                                       "run_depth": bad})
+        assert stage is not None
+        assert stage.run_depth >= 2, bad
+
+
+def test_an_explicit_runs_list_still_overrides(tmp_path):
+    """A door, not a requirement. Someone who has said exactly where to look
+    for a tree too large to walk means it, and keeps saying it."""
+    from seren_theatre.config import StageConfig
+
+    stage = StageConfig.from_dict({"path": str(tmp_path),
+                                   "runs": ["only_these_*"]})
+    assert stage.runs == ["only_these_*"]
 
 
 def test_a_tilde_path_expands(tmp_path):

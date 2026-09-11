@@ -53,6 +53,7 @@ from typing import Any, Dict, List, Optional
 from seren_meninges import ServerConfig, TlsConfig
 
 from ._diag import diag
+from .sources import RUN_DEPTH_DEFAULT
 
 try:
     import yaml  # type: ignore[import-untyped]
@@ -74,25 +75,64 @@ class StageConfig:
     path: str
     # Globs, relative to path, for run logs. Ordered by mtime when displayed.
     logs: List[str] = field(default_factory=lambda: ["*.log"])
-    # Globs for artifact roots - the per-rung output directories.
+    # Globs for artifact roots. EMPTY MEANS LOOK, and empty is the default.
     #
-    # `msmoe_*` IS THE PIPELINE'S OWN DEFAULT AND WAS MISSING. Left to itself,
-    # ms-moe-maker writes to `msmoe_run_{size}` or `msmoe_dryrun_{size}` - and
-    # neither of the two globs here matches either of those. So a stranger who
-    # installed both projects and changed nothing got an empty stage with no
-    # explanation, which reads as "nothing has been built here" rather than as
-    # "the viewer is looking for directories with other names". A silent miss
-    # that looks like an honest empty is the worst shape a default can have.
+    # THIS USED TO BE A WHITELIST AND THE WHITELIST KEPT BEING WRONG. The
+    # comment that stood here described one instance: the default globs did not
+    # match `msmoe_run_{size}`, the pipeline's own output directory, so a
+    # stranger who installed both projects and changed nothing got an empty
+    # stage with no explanation. It was fixed by adding another glob. Then a
+    # recipe wrote to `gauntlet-nano-runs/0.5B` against a config listing
+    # `gauntlet-runs/*`, and the run vanished the same way - written by someone
+    # who had read that config an hour earlier.
     #
-    # It also catches `msmoe_data`, the shared corpus root, which is NOT a run
-    # - and that is fine: looks_like_rung() drops it, which is the exact case
-    # it was written for after `dryrun_data` rendered as an empty rung card.
-    # Broad glob, narrow predicate.
-    rungs: List[str] = field(default_factory=lambda: ["dryrun_*", "msmoe_*",
-                                                      "*_agent_*"])
+    # Two people with the config open both got it wrong, which says the knob is
+    # the defect and not its users. Worse, the miss is not cosmetic: harvest
+    # only ever sees runs the scan found, so an unmatched run is never
+    # archived either, and deleting it to reclaim disk destroys the record with
+    # nothing said. A silent miss that looks like an honest empty is the worst
+    # shape a default can have, and this one took history with it.
+    #
+    # So the default is to ask the directories what they are - see
+    # sources.discover_runs. A list here still wins, because someone who has
+    # said exactly where to look means it: a tree too large to walk, or a stage
+    # that should show one run out of forty. A door, not a requirement.
+    runs: List[str] = field(default_factory=list)
+    # How deep under `path` a run may sit. See sources.RUN_DEPTH_DEFAULT for
+    # why the number errs deep: too shallow loses runs silently, too deep costs
+    # milliseconds. Ignored when `runs` is set, which bounds the walk itself.
+    run_depth: int = RUN_DEPTH_DEFAULT
+    # WHAT THE BUILDER CALLS THIS DIRECTORY, when it is not this box.
+    #
+    #     path:          /mnt/spark/msMoEMaker     # where Theatre sees it
+    #     remote_prefix: /mnt/nvme/msMoEMaker      # what the builder calls it
+    #
+    # Cross-box is an operator concern, not a protocol: you mount the builder's
+    # output root and Theatre reads it. Discovery, harvest and Previous
+    # Surgeries all work with zero new code, because `manifest.Stage.artifact`
+    # was made relative for exactly this - "read through a mount with a
+    # different prefix" is in its docstring.
+    #
+    # TWO JOBS, AND THE SECOND IS THE ONE THAT EARNS THE FIELD:
+    #
+    #  1. It records the FRAME a run was read under. Copied onto the archive
+    #     row at harvest, so a row stays interpretable after somebody re-mounts
+    #     the Spark somewhere else or retires it - a row is a claim about the
+    #     past and the current config is not.
+    #  2. IT DECLARES THE STAGE REMOTE, which changes what an empty directory
+    #     means. An unmounted mount point is an empty directory that stats
+    #     perfectly, so on a remote stage "nothing here" reads as `unknown`
+    #     rather than as "every model was deleted". See archive.harvest._presence.
+    #
+    # The translation itself is sources.builder_path - one implementation, used
+    # both when a run is scanned and when an archived row is rendered.
+    #
+    # Empty is the default and means local: the path is what it says it is.
+    remote_prefix: str = ""
 
     def resolved(self) -> Path:
         return Path(os.path.expanduser(self.path)).resolve()
+
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> Optional["StageConfig"]:
@@ -110,14 +150,26 @@ class StageConfig:
             return None
         default = cls(name="", path="")
         logs = d.get("logs")
-        rungs = d.get("rungs")
+        runs = d.get("runs")
+        # A DEPTH THAT CANNOT BE READ IS THE DEFAULT, not zero. `run_depth: ""`
+        # coerced to 0 would switch discovery off entirely and report an empty
+        # stage - a typo that silently un-archives every future run, which is
+        # precisely the shape of miss this whole change exists to remove.
+        try:
+            depth = int(d.get("run_depth", default.run_depth))
+        except (TypeError, ValueError):
+            depth = default.run_depth
         return cls(
             name=str(name or Path(str(path)).name or "stage"),
             path=str(path),
             logs=[str(x) for x in logs] if isinstance(logs, list) and logs
             else default.logs,
-            rungs=[str(x) for x in rungs] if isinstance(rungs, list) and rungs
-            else default.rungs,
+            # Empty means LOOK. An explicit list is an override and wins; see
+            # the field comment for why it is no longer the default.
+            runs=[str(x) for x in runs] if isinstance(runs, list) and runs
+            else default.runs,
+            run_depth=depth if depth >= 1 else default.run_depth,
+            remote_prefix=str(d.get("remote_prefix") or ""),
         )
 
 
@@ -161,6 +213,32 @@ class UpdatesConfig:
         )
 
 
+def as_argv(value: Any) -> List[str]:
+    """A command as argv, from either spelling, dropping nothing silently.
+
+    A string becomes a ONE-element argv - see the `command` field comment for
+    why it is not split. A list becomes itself, with empty entries dropped
+    because `["ssh", "", "host"]` would exec with an empty argument and the
+    error would come from ssh, three layers from the yaml that caused it.
+
+    Anything else (a number, a dict, a bool) is not a command and reads as
+    unset, which routes into the same "nothing configured" path a missing key
+    takes. A malformed value must not become a plausible-looking argv.
+
+    PUBLIC, AND CALLED AGAIN AT THE READING END. `list("/usr/bin/x")` is
+    `['/','u','s','r',...]` - so a PipelineConfig built in code with a bare
+    string, which is every caller written before this field took a list, would
+    resolve to a command named "/" with eleven arguments. stagehand calls this
+    rather than list() so that there is one definition of what a string means
+    instead of a second one that is subtly worse.
+    """
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple)):
+        return [str(x) for x in value if str(x)]
+    return []
+
+
 @dataclass
 class PipelineConfig:
     """WHICH ms-moe-maker Theatre forks. The answer used to be "whichever one".
@@ -192,8 +270,28 @@ class PipelineConfig:
     thing you were avoiding is the worst possible way to honour a config file.
     """
 
-    # An explicit path to the console script. Wins over everything.
-    command: str = ""
+    # THE COMMAND, AS ARGV. Wins over everything.
+    #
+    # A STRING IS ONE PATH; A LIST IS ARGV. Both are accepted and they mean
+    # different things on purpose:
+    #
+    #     command: /usr/local/bin/ms-moe-maker          # one file, verified
+    #     command: ["ssh", "spark128gb", "/mnt/nvme/msMoEMaker/bin/ms-moe-maker"]
+    #
+    # A string is NEVER split on whitespace. Splitting it would make
+    # `command: /opt/Ms MoE/bin/ms-moe-maker` mean something nobody wrote, and
+    # quoting rules invented at this layer are how a config file starts needing
+    # a shell manual. A path with a space in it is one argument; if you want two
+    # arguments, write two list entries. Lenient about the TYPE, strict about
+    # the meaning.
+    #
+    # WHY ARGV AT ALL: a remote build is not a transport problem, it is a
+    # command problem. `resolve_command()` already returns a list and
+    # `build_argv` already appends the verb and the recipe to it, so a build on
+    # another box needs no client, no port and no protocol - just a longer
+    # argv. Stagehand still owns the stdout redirect, which is why the events
+    # JSONL lands on the Theatre box even though the build runs elsewhere.
+    command: List[str] = field(default_factory=list)
     # A virtualenv root. bin/ms-moe-maker (or Scripts\ms-moe-maker.exe) inside
     # it is used, falling back to that venv's OWN python -m ms_moe_maker -
     # still inside the venv named here, never outside it.
@@ -203,7 +301,7 @@ class PipelineConfig:
     def from_dict(cls, d: Optional[dict]) -> "PipelineConfig":
         if not isinstance(d, dict):
             return cls()
-        return cls(command=str(d.get("command") or ""),
+        return cls(command=as_argv(d.get("command")),
                    venv=str(d.get("venv") or ""))
 
     def configured(self) -> bool:
@@ -213,12 +311,12 @@ class PipelineConfig:
 
 @dataclass
 class ArchiveConfig:
-    """What survives after a rung directory is deleted.
+    """What survives after a run directory is deleted.
 
     THE PROBLEM IS NOT THAT FILES GET DELETED. It is that the thing worth
     keeping is inside the thing you have to delete: an eval report is ten
-    kilobytes and the rung holding it is forty-five gigabytes. Deleting that
-    rung is the correct, routine thing to do when you need the disk back, and
+    kilobytes and the run holding it is forty-five gigabytes. Deleting that
+    run is the correct, routine thing to do when you need the disk back, and
     doing it destroys the record - so the more disciplined you are about disk,
     the less history you have.
 
@@ -499,8 +597,12 @@ def _apply_env_overrides(cfg: TheatreConfig) -> TheatreConfig:
 
     if v := env.get("SEREN_THEATRE_VENV"):
         cfg.pipeline.venv = v
+    # ONE PATH, not argv. An environment variable is a flat string and there
+    # is no non-arbitrary way to split one into arguments; a remote launch is a
+    # list and belongs in yaml where it can be written as one. Same coercion as
+    # the file so the two spellings cannot disagree about what a string means.
     if v := env.get("SEREN_THEATRE_MSMOE"):
-        cfg.pipeline.command = v
+        cfg.pipeline.command = as_argv(v)
 
     if v := env.get("SEREN_THEATRE_STAGE"):
         cfg.stages.append(StageConfig(name=Path(v).name or "stage", path=v))

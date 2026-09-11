@@ -30,9 +30,16 @@
              that makes it an instrument. -->
         <span class="hint" id="cmp-status"></span>
         <button id="cmp-go" disabled>Compare</button>
+        <!-- The sweep answers the question you did not know to ask. Ticking two
+             runs needs a hypothesis; this finds the pairs where attribution is
+             ALREADY warranted, which in forty runs is 780 combinations nobody
+             was ever going to work through by hand. Its own button because it
+             is quadratic and must not ride the five-second poll. -->
+        <button id="cmp-sweep" title="find every pair in this history that differs by one input">Sweep</button>
         <button id="arc-reload" title="re-read the archive">Refresh</button>
     </div>
     <div id="cmp-body"></div>
+    <div id="sweep-body"></div>
     <div id="arc-body"></div>
 </section>
 

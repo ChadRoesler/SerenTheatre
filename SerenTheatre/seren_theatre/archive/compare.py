@@ -224,6 +224,63 @@ def outcome_diff(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+#: Below this, two numbers are the same number. Not a fudge: these metrics
+#: arrive as JSON and are compared exactly everywhere else, but a mean recomputed
+#: over a set whose members were summed in a different order can differ in the
+#: last bits - and reporting THAT as "the pipeline is not repeatable" is crying
+#: wolf about floating point. Anything a person would call a change is orders of
+#: magnitude above this.
+MOVED_EPSILON = 1e-9
+
+
+def moved_dimensions(outcome: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Every measured dimension that actually differs, with its delta.
+
+    WHY THIS IS NOT JUST THE HEADLINE MEANS. `nondeterminism` used to ask only
+    whether one of three averages moved, and an average is exactly the wrong
+    place to look for it: two runs can route completely differently - this
+    expert starved, that one taking its ground - and land on the same mean
+    enrichment, because a mean is what you compute when you are willing to lose
+    the distribution. The narrower check answered "no" on the runs with the most
+    to say.
+
+    So the whole surface is asked, and the two exclusions are the ones the
+    outcome itself already flags:
+
+      * an UNRELIABLE enrichment is noise on either side, and a delta between
+        two noises is a number with no referent at all.
+      * a THIN quality set is too small to have measured anything, so a moved
+        score there is a statement about the sample and not about the build.
+
+    Returns the dimensions, not a count - because which one moved is the whole
+    difference between a grade and a design instrument.
+    """
+    out: List[Dict[str, Any]] = []
+
+    def add(label: str, delta: Any) -> None:
+        if isinstance(delta, (int, float)) and not isinstance(delta, bool) \
+                and abs(delta) > MOVED_EPSILON:
+            out.append({"label": label, "delta": delta})
+
+    for row in outcome.get("headline") or []:
+        add(str(row.get("label") or ""), row.get("delta"))
+
+    for row in outcome.get("routing") or []:
+        if not row.get("reliable"):
+            continue
+        add(f"{row.get('name')} enrichment", row.get("delta"))
+
+    for row in outcome.get("quality") or []:
+        if row.get("thin"):
+            continue
+        for metric in ("exact_match", "rouge1", "bleu", "reasoned"):
+            cell = row.get(metric)
+            if isinstance(cell, dict):
+                add(f"{row.get('name')} {metric}", cell.get("delta"))
+
+    return out
+
+
 def compare(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     """Everything a reader needs, including what they may not conclude."""
     diff = config_diff(a, b)
@@ -235,9 +292,9 @@ def compare(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     # sampling. That is a fact about how repeatable this pipeline is, and it is
     # more valuable than any ordinary diff because it sets the floor below
     # which no other comparison here means anything.
-    moved = any(r["delta"] not in (None, 0.0) for r in outcome["headline"])
-    nondeterminism = (verdict == NONE and outcome["a_evaluated"]
-                      and outcome["b_evaluated"] and moved)
+    moved = moved_dimensions(outcome)
+    nondeterminism = bool(verdict == NONE and outcome["a_evaluated"]
+                          and outcome["b_evaluated"] and moved)
 
     return {
         "a": _side(a), "b": _side(b),
@@ -246,6 +303,13 @@ def compare(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
         "incomparable_because": comparability(a, b),
         "outcome": outcome,
         "nondeterminism": nondeterminism,
+        # WHICH DIMENSIONS MOVED, additive beside the boolean rather than
+        # replacing it. "The pipeline is not repeatable" is a grade; "it is not
+        # repeatable IN csharp's enrichment, by 0.31, while every mean held" is
+        # something a person can go and look into. Populated whether or not the
+        # configs were identical, because the same list is what makes a
+        # single-knob comparison readable.
+        "moved": moved,
         "same_build": bool(_side(a)["build_id"])
                       and _side(a)["build_id"] == _side(b)["build_id"],
     }
@@ -257,5 +321,201 @@ def _side(row: Dict[str, Any]) -> Dict[str, Any]:
             "build_id": str(row.get("build_id") or ""),
             "started": row.get("started"), "state": row.get("state"),
             "stage": row.get("stage"), "ok": row.get("ok"),
-            "rung_present": row.get("rung_present"),
+            # BOTH, and `run_state` is the one the viewer reads. Passing only
+            # the boolean made this panel degrade `unknown` to "archived only" -
+            # announcing a deletion because a share was down, which is the
+            # precise false alarm the third state was added to stop. The
+            # surgeries list got the three-state rendering and this surface did
+            # not, because a derived boolean looks complete on its own.
+            "run_present": row.get("run_present"),
+            "run_state": row.get("run_state") or "",
             "resolved_count": len(manifest.get("resolved") or {})}
+
+
+# ── the sweep: what the history already proves ──────────────────────────────
+#
+# `compare` answers a question you brought. This answers the one you did not
+# know to ask.
+#
+# THE PROBLEM WITH A PAIRWISE TOOL. `attribution == SINGLE` is the only case
+# where pointing at a knob is defensible - and finding those pairs by hand in
+# forty runs means working through seven hundred and eighty combinations. So the
+# instrument existed and nobody could aim it. Every run was in the archive and
+# none of them were telling anybody anything.
+#
+# The archive holds every row and config_diff is already written, so the thing a
+# history can do that a pair cannot is sweep itself: find the pairs where
+# attribution is ALREADY warranted, rather than inventing attribution for the
+# pairs somebody happened to tick.
+#
+# AND THE FLAT ONES COUNT. A knob that moved nothing across three pairs is a
+# finding - arguably the more useful one, because it is the one you can stop
+# turning. An instrument that only reports movement is a movement detector.
+#
+# NO NEW OPINIONS ARE FORMED HERE. Every verdict comes from config_diff,
+# attribution, comparability and moved_dimensions. This decides which pairs to
+# ask about; the answers are the same ones the side-by-side view gives, which is
+# what stops this from becoming a second opinion with a nicer table.
+
+#: The sweep is quadratic in a group, and the README is blunt about the budget:
+#: "the dashboard must never be the reason the box is busy - that would be an
+#: unusually stupid way to perturb a measurement." So it is capped, and the
+#: result SAYS it was capped. A silently truncated sweep would report "nothing
+#: found" about runs it never looked at, which is this codebase's signature
+#: failure wearing a lab coat.
+SWEEP_MAX_PAIRS = 20_000
+
+
+def _identity(row: Dict[str, Any]) -> Tuple:
+    """What makes two runs the same EXPERIMENT rather than two experiments.
+
+    Grouping on this is not an optimisation that happens to help - comparability
+    already refuses to treat a 0.5B dry run and a 7B as one experiment, so pairs
+    across a boundary could never have produced a finding. It cuts the quadratic
+    down as a side effect.
+    """
+    resolved = _resolved(row)
+    return tuple(repr(resolved.get(f)) for f in IDENTITY_FIELDS)
+
+
+def _finding(a: Dict[str, Any], b: Dict[str, Any], diff: Dict[str, Any],
+             outcome: Dict[str, Any], kind: str) -> Dict[str, Any]:
+    """One row of the report. Older run first, so a delta reads as a change."""
+    inputs = diff.get("inputs") or []
+    knob = inputs[0] if len(inputs) == 1 else None
+    moved = moved_dimensions(outcome)
+    return {
+        "kind": kind,
+        "a": a.get("run_key"), "b": b.get("run_key"),
+        "a_name": a.get("name"), "b_name": b.get("name"),
+        "a_started": a.get("started"), "b_started": b.get("started"),
+        "field": (knob or {}).get("field"),
+        "a_value": (knob or {}).get("a"), "b_value": (knob or {}).get("b"),
+        "knob": (knob or {}).get("knob"),
+        "moved": moved,
+        # A knob that changed nothing is a RESULT, not an empty row. It is the
+        # one you get to stop turning.
+        "flat": not moved,
+        "has_glossary": bool(diff.get("has_glossary")),
+    }
+
+
+def _biggest(finding: Dict[str, Any]) -> float:
+    deltas = [abs(float(m["delta"])) for m in finding.get("moved") or []]
+    return max(deltas) if deltas else 0.0
+
+
+def sweep(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Every pair in this history that a reader is entitled to conclude from.
+
+    Two kinds, and the order is deliberate:
+
+      nondeterminism  identical inputs, different numbers. FIRST, because it
+                      sets the floor below which no other finding here means
+                      anything - a knob that moved enrichment by 0.04 is not a
+                      result if rerunning the same config moves it by 0.09.
+      single          exactly one input differed. What moved, or that nothing
+                      did.
+
+    Pairs with several inputs changed are counted and NOT listed. Nothing here
+    could tell you which one moved the number, and a list of them would be a
+    confidently-wrong claim generator with a nice table - so they are reported
+    as a number, which is also a nudge toward changing one thing at a time.
+
+    `by_field` is the part that turns this from a list into an instrument: per
+    knob, how many pairs tested it and how many of them moved anything. That is
+    the difference between "run B scored better" and "target_steps is
+    load-bearing and lr is provably flat in this history".
+    """
+    findings: List[Dict[str, Any]] = []
+    groups: Dict[Tuple, List[Dict[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault(_identity(row), []).append(row)
+
+    pairs = 0
+    multiple = 0
+    incomparable = 0
+    unevaluated = 0
+    truncated = False
+
+    for group in groups.values():
+        # Oldest first, so every pair reads a -> b in the direction time ran.
+        ordered = sorted(group, key=lambda r: (float(r.get("started") or 0.0),
+                                               str(r.get("run_key") or "")))
+        for i, a in enumerate(ordered):
+            for b in ordered[i + 1:]:
+                if pairs >= SWEEP_MAX_PAIRS:
+                    truncated = True
+                    break
+                pairs += 1
+                if comparability(a, b):
+                    # Cannot happen inside a group unless a manifest is missing
+                    # an identity field on one side; counted rather than assumed
+                    # away.
+                    incomparable += 1
+                    continue
+                diff = config_diff(a, b)
+                verdict = attribution(diff)
+                if verdict == MULTIPLE:
+                    multiple += 1
+                    continue
+                outcome = outcome_diff(a, b)
+                if not (outcome["a_evaluated"] and outcome["b_evaluated"]):
+                    # Built and never graded is a real state and a common one.
+                    # There is nothing to compare, which is not a null finding.
+                    unevaluated += 1
+                    continue
+                if verdict == NONE:
+                    found = _finding(a, b, diff, outcome, "nondeterminism")
+                    # Identical configs with identical numbers is the pipeline
+                    # behaving. Not a finding, and listing it would bury the
+                    # ones that are.
+                    if found["moved"]:
+                        findings.append(found)
+                    continue
+                findings.append(_finding(a, b, diff, outcome, SINGLE))
+            if truncated:
+                break
+        if truncated:
+            break
+
+    by_field: Dict[str, Dict[str, Any]] = {}
+    for found in findings:
+        # ONE GUARD, ONE REASON. A nondeterminism finding has no field by
+        # construction - verdict NONE means zero changed inputs, so `_finding`
+        # leaves it None - and the second half of this condition used to say the
+        # same thing a different way. Two conditions for one fact means a
+        # mutation can remove either and nothing changes, which is how a guard
+        # stops being tested.
+        if found["kind"] != SINGLE:
+            continue
+        entry = by_field.setdefault(found["field"], {
+            "field": found["field"], "pairs": 0, "moved": 0, "flat": 0,
+            "knob": found["knob"], "largest": 0.0})
+        entry["pairs"] += 1
+        entry["moved" if found["moved"] else "flat"] += 1
+        entry["largest"] = max(entry["largest"], _biggest(found))
+
+    findings.sort(key=lambda f: (f["kind"] != "nondeterminism",
+                                 -_biggest(f), str(f["field"] or "")))
+
+    return {
+        "findings": findings,
+        # Sorted so the readable claim comes first: a knob that moved something,
+        # by the most it moved. Flat knobs after, and they are the ones with a
+        # `pairs` count and no movement.
+        "by_field": sorted(by_field.values(),
+                           key=lambda e: (-e["moved"], -e["largest"],
+                                          e["field"])),
+        "runs": len(rows),
+        "groups": len(groups),
+        "pairs": pairs,
+        # What was looked at and rejected, said out loud. "No findings" has to be
+        # distinguishable from "nothing was comparable", or the empty state is a
+        # lie by omission.
+        "skipped": {"several_inputs": multiple, "not_evaluated": unevaluated,
+                    "incomparable": incomparable},
+        "truncated": truncated,
+        "max_pairs": SWEEP_MAX_PAIRS,
+    }
+

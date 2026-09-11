@@ -104,11 +104,11 @@ refresh_seconds: 5    # Default: 5
 #   # command: /usr/local/bin/ms-moe-maker  # or name the script outright
 
 
-# ── What survives deleting a rung ────────────────────────────────────────────
+# ── What survives deleting a run ────────────────────────────────────────────
 #
 # THE PROBLEM IS NOT THAT FILES GET DELETED. It is that the thing worth keeping
 # is INSIDE the thing you have to delete: an eval report is ten kilobytes and
-# the rung holding it is forty-five gigabytes. Deleting that rung is the
+# the run holding it is forty-five gigabytes. Deleting that run is the
 # correct, routine thing to do when you need the disk back, and doing it used
 # to take the record with it.
 #
@@ -172,26 +172,65 @@ stages:
     logs:
       - "*.log"
 
-    # Per-rung artifact roots. Overlapping patterns are fine — a directory
-    # matched twice is scanned once.
+    # YOU ALMOST CERTAINLY DO NOT NEED THIS. Leave `runs` out and Theatre
+    # finds runs by asking directories what they are: a run is a directory with
+    # a manifest in it, or with run-shaped artifacts. Name your output root
+    # anything — msmoe_run_7B, gauntlet-nano-runs/0.5B, tuesday — and it turns
+    # up on its own.
     #
-    # `msmoe_*` covers the pipeline's OWN defaults (msmoe_run_{size} and
-    # msmoe_dryrun_{size}), which is why it is in the shipped default: without
-    # it, someone who installed both projects and changed nothing saw an empty
-    # stage and no hint as to why.
+    # This used to be a required whitelist and the whitelist kept being wrong,
+    # twice by people who had this file open. That is not a user problem: a
+    # setting you must keep in sync with a recipe in another repository will be
+    # out of sync on somebody else's machine, and they will not report it —
+    # they will see an empty stage and conclude nothing was built. Worse, an
+    # unmatched run is never ARCHIVED either, so deleting it to reclaim disk
+    # destroys the record silently.
     #
-    # It also matches msmoe_data and shard_cache, and that is fine: the glob
-    # PROPOSES and the directory DECIDES. A rung is a directory with a manifest
-    # or rung-shaped artifacts in it; a corpus root is neither, and is dropped.
+    # Set it only to NARROW: a tree too large to walk, or a stage that should
+    # show one run out of forty. A list here overrides discovery completely.
     #
-    # A nested pattern works too, for a recipe that puts every rung one level
-    # down:  - "gauntlet-runs/*"
+    # runs:
+    #   - "gauntlet-runs/*"
+
+    # How deep under `path` a run may sit. Only consulted when `runs` is
+    # unset, since a glob bounds the walk itself.
     #
-    # Default: ["dryrun_*", "msmoe_*", "*_agent_*"]
-    rungs:
-      - "dryrun_*"
-      - "msmoe_*"
-      - "*_agent_*"
+    # Errs deep on purpose: too shallow loses a run silently AND stops it being
+    # archived, too deep costs about twenty milliseconds per refresh on an
+    # 87,000-entry workbench. Lower it if your stage path is enormous and
+    # shallow; raise it if your runs are nested further than three levels.
+    #
+    # Default: 3
+    run_depth: 3
+
+    # WHAT THE BUILDER CALLS THIS DIRECTORY, when the builder is another box.
+    #
+    #     path:          /mnt/spark/msMoEMaker    # where Theatre sees it
+    #     remote_prefix: /mnt/nvme/msMoEMaker     # what the Spark calls it
+    #
+    # Cross-box is a mount and nothing else — NFS, SMB, sshfs, your choice.
+    # Mount the builder's output root here and discovery, harvest and Previous
+    # Surgeries all work with no extra service, no extra port and no extra
+    # dependency. Two strings, and both of them optional.
+    #
+    # Setting it does two things:
+    #
+    #   1. Records, on every archived row, the prefix the run was read under —
+    #      so a row is still interpretable after you re-mount that box
+    #      somewhere else or retire it. A row is a claim about the past and
+    #      your current config is not.
+    #   2. Tells Theatre this stage arrives over a mount, which changes what an
+    #      EMPTY directory means. An unmounted mount point is an empty folder
+    #      that stats perfectly, so on a remote stage "nothing here" is
+    #      reported as `unknown` rather than as "every model was deleted".
+    #      Erring that way costs a grey badge; erring the other way announces a
+    #      data loss that did not happen.
+    #
+    # Leave it unset for a local stage, which is the normal case: the path is
+    # simply what it says it is.
+    #
+    # Default: unset
+    # remote_prefix: /mnt/nvme/msMoEMaker
 
   # As many as you like. A stage that is not on disk says so rather than
   # vanishing — an empty list and a missing directory are different facts.

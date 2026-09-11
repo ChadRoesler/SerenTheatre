@@ -81,10 +81,15 @@ const EXPORT = `
 ;globalThis.__theatre = {
     structuralSignature, breakablePath, pbValue, collectTicks, retick,
     stagesHtml, logsHtml, fmtDur, knobFor, pbBlock,
-    archiveHtml, repHtml, repRecipeHtml, compareHtml,
+    archiveHtml, repHtml, repRecipeHtml, compareHtml, sweepHtml,
     bsRefusalHtml, bsFieldRows, bsPost, bsShow,
     bsExportFormHtml, bsExportedHtml, bsExportFailedHtml,
     get KEPT(){ return KEPT_PLAYBILLS; }, set KEPT(v){ KEPT_PLAYBILLS = v; },
+    // Same accessor trick as KEPT, for the same reason: the stage's empty
+    // state consults ARCHIVE to say where the history went, and a top-level
+    // let-binding is unreachable from out here. (No backticks in this comment
+    // on purpose - it lives inside a template literal, and one would end it.)
+    get ARCHIVE(){ return ARCHIVE; }, set ARCHIVE(v){ ARCHIVE = v; },
 };
 `;
 vm.runInThisContext(src + EXPORT, { filename: 'scripts.js' });
@@ -97,7 +102,7 @@ const NOW = 1_700_000_000;
 function board(shift, over) {
     over = over || {};
     const quietFor = (over.quiet_for != null ? over.quiet_for : 2760) + shift;
-    return {
+    const out = {
         generated: NOW + shift,
         took_ms: 3.1 + shift,          // ticks for a different reason; same fix
         refresh_seconds: 5,
@@ -127,6 +132,12 @@ function board(shift, over) {
             }],
             current: '/mnt/nvme/fraunkensteinLab/dryrun_0.5B',
             earlier: 0,
+            // ON_STAGE IS THE SERVER'S VERDICT, not a repeat of rungs[0].
+            // sources._wants_the_stage decides it, so the fixture carries it
+            // the way the payload does: the same object when there is something
+            // to act on, and null when the run merely finished. Rebuilt below
+            // from `rungs` so the two cannot drift inside this fixture either.
+            finished_here: over.finished_here || 0,
             rungs: [{
                 name: 'dryrun_0.5B',
                 path: '/mnt/nvme/fraunkensteinLab/dryrun_0.5B',
@@ -198,12 +209,23 @@ function board(shift, over) {
                           status: over.status || 'running',
                           known_status: true, started: NOW - 30000,
                           ended: null, elapsed: 30000 + shift,
-                          artifact: null, note: null },
+                          artifact: over.artifact === undefined
+                              ? null : over.artifact,
+                          note: null },
                     ],
                 },
             }],
         }],
     };
+    // The server sets on_stage to the run itself unless that run has simply
+    // finished. Mirrored here rather than hand-written so a fixture change to
+    // the run's state carries through to what the stage is told to draw.
+    const st = out.stages[0];
+    const run = st.rungs[0];
+    st.on_stage = over.on_stage === undefined
+        ? (run.state === 'finished' ? null : run)
+        : over.on_stage;
+    return out;
 }
 
 // -- (1) the structural signature -------------------------------------------
@@ -241,6 +263,86 @@ assert.strictEqual(T.structuralSignature(a), T.structuralSignature(shuffled),
 // -- (1) the ticks: every key rendered is a key retick can fill --------------
 
 const html = T.stagesHtml(a) + T.logsHtml(a);
+
+// ── where the stage put what it made ────────────────────────────────────────
+//
+// THE FIXTURE MIRRORED THE BUG, which is why nobody caught it. Both stages here
+// carried `artifact: null`, and scripts.js only draws the row when it is
+// non-null - so the line was never rendered in any test, while the builder
+// never populated the field either. Producer blank, fixture blank, renderer
+// therefore never exercised: three ways of not noticing the same hole.
+//
+// `manifest.Stage.artifact` is a path RELATIVE to the run directory, on purpose,
+// so the manifest survives being moved or read through a mount. The row shows it
+// as given rather than dressing it up into something absolute.
+//
+// ANCHORED TO THE ROW MARKUP, not to the word: `artifacts written` is a
+// different reading on the same card, so a bare `includes('artifact')` matches
+// whether or not this row exists - a check that cannot fail for its own reason.
+const ROW = 'artifact <code>';
+const withArtifact = T.stagesHtml(board(0, { artifact: 'moe_trained' }));
+assert.ok(withArtifact.includes(ROW + 'moe_trained</code>'),
+    'a stage that names what it produced renders no artifact row - the field is '
+    + 'parsed, shipped and then dropped on the floor');
+assert.ok(!T.stagesHtml(board(0)).includes(ROW),
+    'a stage with no artifact still draws the row, so every preflight gets an '
+    + 'empty label where a path should be');
+
+// ── the stage holds what there is something to DO about ─────────────────────
+//
+// The brief, in Chad's words: you eyeball the stage and go "cool something's
+// cooking" or "oh no something failed, investigate". Everything else is history
+// and history has a tab. So a clean finish comes OFF the stage, and every other
+// state stays - `stalled` most of all, since that is the one you want to catch.
+//
+// THE EMPTY STATE USED TO LIE. It said "No runs here yet" whatever the reason,
+// including over a stage whose builds had all finished and been archived - a
+// harvested run whose directory was reclaimed leaves no rung to count. Telling
+// somebody nothing was ever built here, with the history one tab away, is this
+// codebase's oldest failure in its newest costume.
+
+const running = T.stagesHtml(board(0));
+assert.ok(running.includes('dryrun_0.5B'),
+    'a live run is not on the stage, which is the one thing the stage is for');
+assert.ok(!running.includes('Nothing cooking'),
+    'a live run rendered the nothing-cooking empty state');
+
+// A clean finish leaves the stage. The payload still carries it - `rungs` is
+// what harvest reads, and shortening that would stop runs being archived.
+const ended = board(0, { on_stage: null, finished_here: 3 });
+const endedHtml = T.stagesHtml(ended);
+assert.ok(!endedHtml.includes('dryrun_0.5B'),
+    'a finished run is still drawn on the stage, so "something is cooking" and '
+    + '"this ended cleanly last Tuesday" look the same at a glance');
+assert.ok(ended.stages[0].rungs.length === 1,
+    'the payload dropped the finished run - harvest reads `rungs`, and a '
+    + 'viewer-facing decision must never shorten that list');
+assert.ok(endedHtml.includes('Nothing cooking'),
+    'nothing on stage and it does not say so');
+assert.ok(endedHtml.includes('3 finished runs'),
+    'the count of finished runs still on disk is not shown, so "nothing '
+    + 'cooking" is indistinguishable from "nothing here"');
+
+// AND IT NAMES WHERE THE REST WENT. The seam this replaces pointed at
+// `/api/state`, which is an API, not a room a person can look in.
+T.ARCHIVE = { enabled: true, total: 7, surgeries: [] };
+const reclaimed = T.stagesHtml(board(0, { on_stage: null, finished_here: 0 }));
+assert.ok(reclaimed.includes('Previous Surgeries'),
+    'the empty state does not point at the tab that holds the history');
+assert.ok(reclaimed.includes('7'),
+    'the archived count is not shown, so a stage whose directories were all '
+    + 'reclaimed still reads as a stage where nothing ever happened');
+assert.ok(!reclaimed.includes('No runs here yet'),
+    'THE ORIGINAL LIE: four archived builds, zero rungs left on disk, and the '
+    + 'page says nothing was ever built here');
+T.ARCHIVE = null;
+
+// Genuinely nothing, ever. The one case where the old sentence was true.
+const virgin = T.stagesHtml(board(0, { on_stage: null, finished_here: 0 }));
+assert.ok(virgin.includes('No runs here yet'),
+    'a stage with no runs and no history should say exactly that');
+assert.ok(!virgin.includes('Nothing cooking'),
+    'a stage that never built anything claims something finished here');
 const rendered = new Set(
     [...html.matchAll(/data-tick="([^"]*)"/g)].map((m) => m[1]));
 assert.ok(rendered.size >= 6, `only ${rendered.size} tick nodes were rendered`);
@@ -609,6 +711,136 @@ assert.ok(arc.includes('archived only'),
     + 'viewer is now asserting that a rung exists when a stat disagrees');
 assert.ok(arc.includes('dryrun_0.5B'), 'the surgery did not render');
 assert.ok(arc.includes('cafe0001'), 'the build_id is missing');
+
+// ── presence is three-valued, and the third one is not red ──────────────────
+//
+// `gone` used to carry both "I looked and it is not there" and "I could not
+// look". A share that hiccups made every row on it announce a deletion, in red,
+// over models sitting safely on an unmounted disk. So `unknown` has to render
+// as its own thing, and it has to NOT read as a failure.
+const arcGone = T.archiveHtml(archiveState({
+    surgeries: [Object.assign({}, SURGERY,
+        { rung_state: 'gone', rung_present: false })] }));
+assert.ok(arcGone.includes('archived only'),
+    'a directory that was looked for and is not there must still say so');
+assert.ok(!arcGone.includes('not reachable'),
+    'a deleted directory was drawn as unreachable - that understates a real '
+    + 'deletion as a mount problem');
+
+const arcUnknown = T.archiveHtml(archiveState({
+    surgeries: [Object.assign({}, SURGERY,
+        { rung_state: 'unknown', rung_present: false })] }));
+assert.ok(arcUnknown.includes('not reachable'),
+    'an unreachable directory has no rendering of its own, so the viewer is '
+    + 'back to reporting a mount outage as a deletion');
+assert.ok(!arcUnknown.includes('archived only'),
+    'an unreachable rung was drawn as deleted - this is the exact false alarm '
+    + 'the third state exists to stop');
+assert.ok(!/badge failed[^>]*>\s*not reachable/.test(arcUnknown),
+    'the unknown state got a failure badge. Nothing is wrong when Theatre '
+    + 'cannot see that far; painting it red trains people to ignore red');
+
+const arcHere = T.archiveHtml(archiveState({
+    surgeries: [Object.assign({}, SURGERY,
+        { rung_state: 'present', rung_present: true })] }));
+assert.ok(arcHere.includes('on disk'), 'a present rung did not say so');
+assert.ok(!arcHere.includes('archived only') && !arcHere.includes('not reachable'),
+    'a rung that is on disk was also labelled missing');
+
+// A boolean-only payload (reconcile skipped) reads at the OLD meaning.
+const arcLegacy = T.archiveHtml(archiveState({
+    surgeries: [Object.assign({}, SURGERY,
+        { rung_state: '', rung_present: false })] }));
+assert.ok(arcLegacy.includes('archived only'),
+    'a pre-column row was re-interpreted as unknown; the old boolean said '
+    + 'gone and the viewer must not invent doubt the server never expressed');
+
+// ── where it lives on the builder, when that differs ───────────────────────
+const arcRemote = T.archiveHtml(archiveState({
+    surgeries: [Object.assign({}, SURGERY,
+        { rung_path: '/mnt/spark/msMoEMaker/runs/x',
+          builder_path: '/mnt/nvme/msMoEMaker/runs/x' })] }));
+assert.ok(arcRemote.includes('on the builder'),
+    'the builder-side path was recorded and never shown - the path Theatre '
+    + 'read is a fact about its own mount, not about the box you would ssh to');
+// EXTRACT THE ELEMENT, DO NOT SEARCH THE PAGE. The mount path legitimately
+// appears elsewhere on this card (the subtitle prints it), so a whole-string
+// negative would match that and pass no matter what this line contains. And
+// breakablePath inserts <wbr> after every slash, so the raw path is never in
+// the output verbatim - assert on what is actually emitted.
+const builderLine = (arcRemote.match(
+    /on the builder:[\s\S]*?<\/div>/) || [''])[0];
+assert.ok(builderLine.includes('nvme/<wbr>msMoEMaker/<wbr>runs'),
+    'the builder path is announced and not rendered');
+assert.ok(!builderLine.includes('spark'),
+    'the builder line printed the MOUNT path, which is the one fact the '
+    + 'reader already has and the one that stops being true');
+
+const arcLocal = T.archiveHtml(archiveState({
+    surgeries: [Object.assign({}, SURGERY,
+        { rung_path: '/x/runs/y', builder_path: '/x/runs/y' })] }));
+assert.ok(!arcLocal.includes('on the builder'),
+    'a local stage printed the same path twice');
+
+// ── what built it, and whether that is still knowable ───────────────────────
+//
+// `build_id` is a digest of the resolved config, so it can VERIFY a rebuild
+// produced the same model. It cannot hand you the thing to run. The recipe text
+// is what makes a rebuild possible, and it was the one input the archive never
+// kept - so the four capture states have to be legible on the row, and exactly
+// one of them is a problem.
+//
+// THESE ARE THE CONSUMER HALF OF THE FIELD. A column harvest writes and nothing
+// draws is the defect this project keeps finding, so the field and its drawing
+// ship together or neither ships.
+
+const recipeRow = (over) => T.archiveHtml(archiveState({
+    surgeries: [Object.assign({}, SURGERY, over)] }));
+
+const kept = recipeRow({ recipe_state: 'captured',
+                         recipe_blob: 'deadbeefcafef00d0123456789abcdef' });
+assert.ok(kept.includes('recipe kept'), 'a captured recipe is not shown');
+assert.ok(kept.includes('deadbeefcafe'),
+    'the digest is not shown, so there is no way to find the blob');
+// The FULL digest belongs in the title attribute, not the visible text - a
+// subtitle line carrying 64 hex characters is a wall, and the short form is
+// what a person copies. Checked by stripping tags rather than by a bare
+// substring: the first draft of this assertion failed on the code's own
+// `title="sha256 ..."`, which was the assertion being wrong and not the page.
+const keptVisible = kept.replace(/<[^>]*>/g, '');
+assert.ok(!keptVisible.includes('deadbeefcafef00d0123456789abcdef'),
+    'the full digest is in the VISIBLE text, not just the title');
+assert.ok(kept.includes('title="sha256 deadbeefcafef00d0123456789abcdef"'),
+    'the full digest is not recoverable at all - the short form alone cannot '
+    + 'be used to find the blob on disk');
+
+const absent = recipeRow({ recipe_state: 'absent', recipe_blob: '' });
+assert.ok(absent.includes('no recipe kept'),
+    'a run with no preserved recipe says nothing, so "incomplete record" is '
+    + 'indistinguishable from "complete record"');
+// ANCHORED TO THE RECIPE ELEMENT, not to the string `badge failed` anywhere on
+// the card. The fixture run has `rung_present: false`, so the card ALREADY
+// carries a failed badge reading "archived only" - a bare substring check
+// passed on that and said nothing about the recipe at all. Two drafts of this
+// assertion were too broad before this one; a test that matches the wrong
+// element is a test that cannot fail for the right reason.
+assert.ok(absent.includes('class="hint" title="this run has no recipe'),
+    'a run with no preserved recipe was not drawn as a plain fact - it is '
+    + 'ordinary for builds that predate the feature, not somebody problem');
+
+const broken = recipeRow({ recipe_state: 'unreadable', recipe_blob: '' });
+assert.ok(broken.includes('recipe unreadable'), 'the one state that IS a '
+    + 'problem rendered silently');
+assert.ok(broken.includes('badge failed" title="the recipe is on disk'),
+    'a recipe that exists on disk and could not be stored is the only one of '
+    + 'the four worth a warning, and it did not get one');
+
+// NOTHING was attempted: every row harvested before this existed. A note on
+// each of those would be noise dressed as diligence.
+const untouched = recipeRow({ recipe_state: '', recipe_blob: '' });
+assert.ok(!untouched.includes('recipe'),
+    'rows from before recipe capture are annotated, which puts a permanent '
+    + 'notice on all of history for no action anybody can take');
 
 // The SAME renderers as the live results panel, not a second implementation.
 // Two renderers for one report eventually disagree about what a number means,
@@ -1283,3 +1515,194 @@ async function aFailedExportShowsWhy() {
     await aFailedExportShowsWhy();
     console.log('viewer probe OK');
 })().catch((e) => { console.error(e); process.exit(1); });
+
+// ── what the build said about itself ────────────────────────────────────────
+//
+// The marker is stagehand's account; `launch.run` is the BUILDER's, and it is
+// the only place a build states its own run directory. Theatre opened that file
+// for a long time and kept only the errors.
+//
+// The rule this rendering must keep: WHERE and UNDER WHAT, never status. A
+// second opinion about what a run is doing is how a dashboard starts
+// disagreeing with itself.
+function withRun(run, extra) {
+    const a = board(0);
+    a.stages[0].launch.run = run;
+    Object.assign(a.stages[0].launch, extra || {});
+    // FLATTENED. These templates wrap prose across source lines, so a sentence
+    // that reads as one string in the code is "no\n   directory" in the output
+    // - and a substring assertion against the raw HTML then fails for a reason
+    // that has nothing to do with what was rendered. Collapsing whitespace
+    // tests the text rather than the indentation.
+    return T.stagesHtml(a).replace(/\s+/g, ' ');
+}
+
+const SAID = {
+    event: 'started', recipe_id: 'r1', name: 'gauntlet', size: '0.5B',
+    experts: ['python', 'csharp'],
+    run_dir: '/mnt/nvme/msMoEMaker/runs/msmoe_run_0.5B',
+    data_root: '/mnt/nvme/data', command: 'ms-moe-builder',
+    cwd: '/mnt/nvme/msMoEMaker',
+    env_applied: { LD_LIBRARY_PATH: '/usr/local/cuda/lib64',
+                   PYTHONUNBUFFERED: '1' },
+    agreed: true,
+};
+
+// Linked: Theatre found the directory, so it says where, plainly.
+const linked = withRun(SAID,
+    { rung_path: '/mnt/spark/msMoEMaker/runs/msmoe_run_0.5B' });
+assert.ok(linked.includes('writing into'),
+    'the build named its run directory and the panel does not say which one - '
+    + 'this is the field that links the process to the thing on disk');
+assert.ok(linked.includes('spark/<wbr>msMoEMaker'),
+    'the LOCAL path is what a person here can open, so it is the one to lead '
+    + 'with');
+assert.ok(linked.includes('the builder calls it'),
+    'a translated path hides the builder-side one, which is what you need once '
+    + 'you ssh over');
+
+// Local stage: both paths identical, so saying it twice is noise.
+const same = withRun(Object.assign({}, SAID, { run_dir: '/local/runs/x' }),
+    { rung_path: '/local/runs/x' });
+assert.ok(same.includes('writing into'), 'a local run still says where');
+assert.ok(!same.includes('the builder calls it'),
+    'a local stage printed the same path twice');
+
+// Unlinked: the build named a directory Theatre cannot see. Said, not hidden,
+// and not force-matched onto whatever rung happens to be there.
+const unlinked = withRun(SAID, { rung_path: null });
+assert.ok(unlinked.includes('no directory of that name is visible here'),
+    'a build on another box with no remote_prefix reported nothing at all - '
+    + 'the operator cannot fix a mapping they are not told is missing');
+assert.ok(unlinked.includes('remote_prefix'),
+    'the explanation should name the knob that fixes it');
+
+// The environment, counted not dumped.
+assert.ok(/2 environment variables/.test(linked),
+    'the environment this box imposed is where the Jetson failures live, and '
+    + 'the count is what makes somebody look when it is surprising');
+assert.ok(linked.includes('LD_LIBRARY_PATH'),
+    'the variable names should be reachable on hover');
+
+// Identity, so the card says WHICH recipe without opening anything.
+assert.ok(linked.includes('gauntlet') && linked.includes('2 experts'),
+    'the build named its recipe and expert count and neither was rendered');
+
+// NO SECOND OPINION. A started event claiming a status must not paint one.
+const lying = withRun(Object.assign({}, SAID,
+    { state: 'finished', status: 'exploded' }),
+    { rung_path: '/mnt/spark/msMoEMaker/runs/msmoe_run_0.5B' });
+assert.ok(!lying.includes('exploded'),
+    'the started event was allowed to paint a status. The manifest owns run '
+    + 'state; two opinions is how a dashboard disagrees with itself');
+
+// Absent, said as absent - the normal state for a hand-run build.
+const quiet = withRun(null);
+assert.ok(quiet.includes('not emitting structured events'),
+    'a build without --json should say that is why the directory is unknown, '
+    + 'rather than leaving a blank where a path goes');
+// ANCHORED TO MARKUP, NOT TO THE PHRASE. The absent-case sentence itself
+// contains the words "writing into" ("...which directory it is writing into is
+// not something Theatre can state"), so a bare substring check matches the very
+// branch it is supposed to prove is absent, and passes no matter what.
+assert.ok(!/writing into <span/.test(quiet),
+    'a panel with no started event claimed a directory anyway');
+
+// ── the sweep panel ─────────────────────────────────────────────────────────
+//
+// The instrument the archive existed for and nobody could aim. Two things this
+// rendering must not do: bury the repeatability floor, and treat a knob that
+// moved nothing as an empty row rather than a result.
+const flatSweep = (s) => (s || '').replace(/\s+/g, ' ');
+
+const SWEEP = {
+    runs: 3, groups: 1, pairs: 3, truncated: false, max_pairs: 20000,
+    archive_total: 3,
+    skipped: { several_inputs: 1, not_evaluated: 0, incomparable: 0 },
+    findings: [
+        { kind: 'nondeterminism', a: 'r1', b: 'r3', a_name: 'one',
+          b_name: 'three', field: null, flat: false,
+          moved: [{ label: 'cs enrichment', delta: 0.31 }] },
+        { kind: 'single', a: 'r1', b: 'r2', a_name: 'one', b_name: 'two',
+          field: 'target_steps', a_value: 100, b_value: 200, flat: false,
+          knob: { summary: 'how many optimiser steps' },
+          moved: [{ label: 'mean enrichment', delta: 0.62 }] },
+        { kind: 'single', a: 'r1', b: 'r4', a_name: 'one', b_name: 'four',
+          field: 'seed', a_value: 1, b_value: 2, flat: true, knob: null,
+          moved: [] },
+    ],
+    by_field: [
+        { field: 'target_steps', pairs: 1, moved: 1, flat: 0, largest: 0.62,
+          knob: { summary: 'how many optimiser steps' } },
+        { field: 'seed', pairs: 1, moved: 0, flat: 1, largest: 0.0,
+          knob: null },
+    ],
+};
+
+const sweep = flatSweep(T.sweepHtml(SWEEP));
+
+assert.ok(sweep.includes('3 pairs examined'),
+    'the sweep must say what it looked at - "no findings" and "nothing was '
+    + 'comparable" are different sentences');
+assert.ok(sweep.includes('target_steps') && sweep.includes('0.62'),
+    'a single-knob finding and its movement were not rendered');
+assert.ok(sweep.includes('+0.62'),
+    'the delta lost its sign - direction is the whole content of that column');
+
+// THE FLOOR GOES FIRST.
+//
+// PRESENCE IS ASSERTED BEFORE ORDER, because indexOf returns -1 for absent and
+// -1 is less than every real index - so an ordering check alone PASSES when the
+// thing that must come first was not rendered at all. A mutation that deleted
+// the nondeterminism branch entirely slipped through exactly that way.
+const floorAt = sweep.indexOf('Same configuration');
+const deltaAt = sweep.indexOf('One input changed');
+assert.ok(floorAt !== -1, 'the repeatability floor was not rendered at all');
+assert.ok(deltaAt !== -1, 'the single-knob finding was not rendered at all');
+assert.ok(floorAt < deltaAt,
+    'a single-knob delta was drawn above the repeatability floor. A knob that '
+    + 'moved 0.04 is not a result if rerunning the same config moves 0.09');
+assert.ok(sweep.includes('cs enrichment'),
+    'the nondeterminism finding must name WHICH dimension moved - that is the '
+    + 'difference between a grade and a design instrument');
+
+// A FLAT KNOB IS A RESULT, not an omission.
+assert.ok(sweep.includes('No effect:'),
+    'a knob that moved nothing was not reported. It is the one you get to stop '
+    + 'turning, and an instrument that only reports movement is a movement '
+    + 'detector');
+assert.ok(/seed<\/code>[\s\S]*?<code>1<\/code>/.test(sweep),
+    'the flat finding did not show which values were compared');
+
+// The by-knob table is the instrument.
+assert.ok(sweep.includes('By knob') && sweep.includes('how many optimiser steps'),
+    'the per-knob table is missing, or the glossary summary is not reachable');
+
+// Multi-input pairs are counted, never listed.
+assert.ok(sweep.includes('changed several inputs'),
+    'pairs that changed several inputs must be counted so the reader knows '
+    + 'they were seen and deliberately not attributed');
+
+// Truncation cannot be silent.
+const cappedSweep = flatSweep(T.sweepHtml(Object.assign({}, SWEEP,
+    { truncated: true, pairs: 20000 })));
+assert.ok(cappedSweep.includes('stopped early'),
+    'a truncated sweep reported partial findings as complete - that is "no '
+    + 'findings" about runs it never examined');
+
+// A short sweep over a long history has to say so.
+const partialSweep = flatSweep(T.sweepHtml(Object.assign({}, SWEEP,
+    { runs: 200, archive_total: 900 })));
+assert.ok(partialSweep.includes('most recent 200 of 900')
+          || partialSweep.includes('200 most recent of 900'),
+    'the sweep looked at 200 of 900 runs and did not say which');
+
+// Nothing attributable is an explained empty state, not a blank.
+const bareSweep = flatSweep(T.sweepHtml(Object.assign({}, SWEEP,
+    { findings: [], by_field: [] })));
+assert.ok(bareSweep.includes('Nothing here is attributable yet'),
+    'an empty sweep rendered blank instead of saying why');
+assert.ok(bareSweep.includes('changed several inputs'),
+    'the empty state must say what WAS examined and rejected, or it reads as '
+    + '"your history is useless" when it means "change one thing at a time"');
+

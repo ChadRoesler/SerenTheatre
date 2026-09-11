@@ -115,7 +115,7 @@ class EvalRun:
     schema_version: int = SCHEMA_VERSION
     eval_id: str = ""
     suite: str = ""
-    rung: str = ""
+    run: str = ""
     model: str = ""
     total: Optional[int] = None
     started: Optional[float] = None
@@ -193,7 +193,7 @@ def _num(value: Any) -> Optional[float]:
 def find(run_dir: Path) -> List[Path]:
     """Every eval sidecar in a run directory, newest last.
 
-    A rung can hold several: eval is a standalone verb as well as a build
+    A run can hold several: eval is a standalone verb as well as a build
     phase, so re-running it after fixing a harness bug leaves both files side
     by side. That history is worth keeping - comparing the run that said 0/10
     against the run that said 9/10 after installing a compiler is the clearest
@@ -246,7 +246,7 @@ def read(path: Path) -> EvalRun:
                 else out.schema_version
             out.eval_id = str(obj.get("eval_id") or "")
             out.suite = str(obj.get("suite") or "")
-            out.rung = str(obj.get("rung") or "")
+            out.run = str(obj.get("run") or "")
             out.model = str(obj.get("model") or "")
             total = obj.get("total")
             out.total = int(total) if isinstance(total, int) else None
@@ -295,7 +295,7 @@ def as_dict(run: EvalRun, *, tail: Optional[int] = None) -> Dict[str, Any]:
         "schema_version": run.schema_version,
         "eval_id": run.eval_id,
         "suite": run.suite,
-        "rung": run.rung,
+        "run": run.run,
         "model": run.model,
         "total": run.total,
         "started": run.started,
