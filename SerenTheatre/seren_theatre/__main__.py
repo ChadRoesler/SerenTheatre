@@ -14,6 +14,7 @@ sources that can disagree are only useful if something compares them.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -198,6 +199,22 @@ def _merge_blobs(src: Path, dest: Path) -> str:
 
 def main() -> None:
     _force_utf8_stdio()
+
+    # --describe, SCANNED AHEAD OF EVERYTHING, exactly as every Seren installer
+    # does it: one line of JSON, exit 0, zero side effects. No config read, no
+    # app factory, no uvicorn - which is the whole point, because the moment you
+    # most want a thing to be able to say its own name is when its install is
+    # broken.
+    #
+    # This existed in the docstring and in a comment further down for a long
+    # time without existing in the code, and the only trace left was an unused
+    # `import json`. Removing that import as dead code was tidying away the
+    # evidence of a missing feature rather than the feature's leftovers.
+    if "--describe" in sys.argv[1:]:
+        from ._describe import DESCRIBE
+        print(json.dumps(DESCRIBE))
+        raise SystemExit(0)
+
     if len(sys.argv) > 1 and sys.argv[1] in VERBS:
         raise SystemExit(_archive_main(sys.argv[2:]))
     parser = argparse.ArgumentParser(
