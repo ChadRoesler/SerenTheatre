@@ -33,9 +33,13 @@ PORT = 7427
 
 GROUP = "auxiliary"
 
-# Every other service in the constellation gets a colour. The theatre gets the
-# house lights down.
-ACCENT = "#171717"
+# Curtain red, and it is the INSTALLER'S value, not a new one chosen here.
+# Both seren-theatre-setup.sh and .ps1 have carried #6d2823 since before this
+# file existed; writing a different colour into the newcomer and then editing
+# two installers to agree with it is a silent re-decision wearing a parity
+# fix's clothes. The older published fact wins. (tests/test_installer_parity.py
+# compares the two, so if this is ever meant to change, change it in all three.)
+ACCENT = "#6d2823"
 
 # REQUIRES NOTHING, deliberately. A stage is a directory, so Theatre can be the
 # first thing installed on a box and still be useful - and the viewer half must
