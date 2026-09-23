@@ -29,6 +29,10 @@ server:
   # or tunnel instead:  ssh -L 7427:localhost:7427 you@thatbox
   # Default: 127.0.0.1
   host: 127.0.0.1
+  # allow_open_lan: false
+  #   A host beyond loopback with no token REFUSES TO START and prints the
+  #   three ways out. Set this true (or <PREFIX>_ALLOW_OPEN_LAN=1) to run open on
+  #   purpose - a trusted LAN, a lab - and it will say so on every boot.
 
   # Default: 7427
   # Family convention: memory 7420, margin 7421, loci 7422, corpus-callosum
