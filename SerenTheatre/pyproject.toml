@@ -22,7 +22,7 @@ dependencies = [
     # The shared Seren core - UI shell, auth, config, update checking. Taken as
     # a CORE dep for the same reason Margin took it: a stale viewer that reports
     # confidently on a run is exactly the bad time update checking prevents.
-    "seren-meninges>=2.2.0,<3",
+    "seren-meninges>=2.3.0,<3",
     # The tendon - request-logging middleware, one copy for the family so a fix
     # lands everywhere. Core rather than an extra because Theatre is a TOOL
     # strangers install: when someone else's viewer shows them the wrong thing,

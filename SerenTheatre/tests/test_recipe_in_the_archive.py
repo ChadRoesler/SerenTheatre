@@ -220,6 +220,23 @@ class TestTheSuffixIsNotOurs:
         assert found is not None, "an empty recipe was reported as no recipe"
         assert found.read_text(encoding="utf-8") == ""
 
+    def test_a_suffixless_copy_is_found_too(self, tmp_path):
+        """The writer keeps the source's suffix and invents none, so a recipe
+        read from a file with no extension is preserved as the bare stem. A
+        glob on `stem.*` reported that run as having no recipe at all."""
+        d = tmp_path / "bare-stem"
+        d.mkdir()
+        (d / mf.RECIPE_STEM).write_text("name: x", encoding="utf-8")
+        found = mf.find_recipe(d)
+        assert found is not None, "the bare-stem copy was invisible"
+        assert found.name == mf.RECIPE_STEM
+
+    def test_a_lookalike_beside_the_manifest_is_not_the_recipe(self, tmp_path):
+        d = tmp_path / "lookalike"
+        d.mkdir()
+        (d / (mf.RECIPE_STEM + "-notes.txt")).write_text("no", encoding="utf-8")
+        assert mf.find_recipe(d) is None
+
 
 class TestTheColumnsReachAnExistingArchive:
     """THE MIGRATION, AND WHY IT NEEDED WRITING AT ALL.
