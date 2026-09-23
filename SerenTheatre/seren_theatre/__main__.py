@@ -235,10 +235,13 @@ def main() -> None:
     from .config import load_config
 
     cfg = load_config(args.config)
+    # FIRST: training logs hold paths, hostnames and corpus snippets. An open
+    # bind with no token is refused here, with the three ways out printed.
+    from seren_meninges.exposure import enforce_server
+    enforce_server(cfg.server, service="seren-theatre", env_prefix="SEREN_THEATRE", log=diag)
     app = create_app(cfg)
 
-    diag(f"[seren-theatre] listening on {cfg.host}:{cfg.port}  -> "
-         f"http://{cfg.host}:{cfg.port}/viewer")
+    diag(f"[seren-theatre] viewer at http://{cfg.host}:{cfg.port}/viewer")
     if not cfg.stages:
         diag("[seren-theatre] no stages configured - the room is empty. Set "
              "SEREN_THEATRE_STAGE=/path/to/lab or add a stages: block.")
