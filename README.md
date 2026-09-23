@@ -1,6 +1,7 @@
 # SerenTheatre
 
-**Watch a model being made.** A read-only viewer over training logs and artifacts.
+**Watch a model being made.** A viewer over training logs and artifacts — and,
+with one extra installed, the room you hand a recipe to.
 
 Named for the *anatomical* theatre — a room built with tiered seats so people can
 watch a dissection. That's the whole design brief. Not a control panel, not a
@@ -15,11 +16,24 @@ house lights down.
 
 **1. Stagehand does the work; the theatre shows the data.**
 
-Theatre never builds anything. The `[stagehand]` extra owns the build and *forks
-a subprocess* rather than importing torch into the viewer — a stagehand is not on
-stage. It invokes the same CLI a human would type, on purpose: if the automated
-path and the hand-run path ever diverge, the hand-run path is the one that rots,
-because it's the one with no users.
+Theatre never builds anything in its own process. The `[stagehand]` extra owns
+the build and *forks a subprocess* rather than importing torch into the viewer —
+a stagehand is not on stage. It invokes the same CLI a human would type, on
+purpose: if the automated path and the hand-run path ever diverge, the hand-run
+path is the one that rots, because it's the one with no users.
+
+There are two install shapes, and they are different rooms:
+
+```bash
+pip install seren-theatre              # a viewer. Zero write verbs.
+pip install 'seren-theatre[stagehand]' # a workshop: Backstage, and routes that run one
+```
+
+The plain install can *say* whether a stagehand exists on the box and can never
+use one. The `[stagehand]` install grows a **Backstage** tab where you write a
+recipe, validate it with the builder's own validator, and hand it to the
+stagehand — which still forks the documented command. Nothing about the viewer
+changes; the workshop is added beside it.
 
 **2. A stage is a directory.**
 
@@ -65,21 +79,38 @@ shows up in the grid with no edit to Starwright.
 
 ## Routes
 
-| Route        | What it is                                            |
-|--------------|-------------------------------------------------------|
-| `/viewer`    | The room itself. Read-only, auto-refreshing.          |
-| `/api/state` | The same thing as JSON, if you'd rather script it.    |
-| `/health`    | Liveness.                                             |
-| `/`          | Service info + the version, family-standard.          |
+Every install has these, and all of them are reads:
+
+| Route                  | What it is                                              |
+|------------------------|---------------------------------------------------------|
+| `/viewer`              | The room itself. Auto-refreshing.                       |
+| `/api/state`           | The same thing as JSON, if you'd rather script it.      |
+| `/api/archive`         | Previous surgeries: every run this box has seen, kept.  |
+| `/api/archive/diff`    | Two runs side by side.                                  |
+| `/api/archive/sweep`   | A family of runs that differ by one knob.               |
+| `/api/books`           | The repertoire: prompt books you can hand to a friend.  |
+| `/health`              | Liveness.                                               |
+| `/`                    | Service info, the version, and `write_routes`.          |
+
+`write_routes` on `/` is the list of every POST/DELETE this process mounted. On
+a plain install it is empty, and `test_the_base_install_has_no_write_verbs`
+keeps it that way. With `[stagehand]` it lists the Backstage routes under
+`/api/backstage`: save a recipe, validate one, run one, eval a finished build,
+export a prompt book, and delete a book you imported. You can read the write
+surface from outside without reading the source, whichever room you are in.
 
 ---
 
 ## Three deliberate constraints
 
-**Read-only, with no knob to turn it off.** A theatre cannot perturb the thing
-on the table. That's precisely what makes it safe to point at a live 14B run
-that's been going for nine hours. There's no config option for a write path
-because there's no write path.
+**Read-only by default, and the write half is an install, not a setting.** A
+theatre cannot perturb the thing on the table. That's precisely what makes it
+safe to point at a live 14B run that's been going for nine hours. There is no
+config option that turns writes on: the plain package mounts no write route,
+and the only way to get one is to install `[stagehand]`. Even then, every write
+goes through a guard that refuses to touch a watched stage — recipes live in
+their own directory outside every stage, and a build's log is written by the
+builder into the run, the same as when a person launches it by hand.
 
 **Binds 127.0.0.1 by default** — like Margin, unlike Memory. A training log
 carries absolute paths, hostnames and the occasional snippet of a corpus. That
@@ -140,14 +171,15 @@ seren-theatre-stagehand recipe.yaml
 > *"Stagehand does the work, cause they do fuckin everything, and the theatre
 > shows the data."*
 
-Note that it's a **command, not a button**. That's the whole design, and it was
-decided by the read-only rule rather than by taste.
-
-Starting a build is a write. Theatre exposes no write surface — there's a test,
-`test_no_route_can_write`, that fails if a POST/PUT/PATCH/DELETE ever appears —
-and that's exactly what makes it safe to point this at a live 14B run that's
-been going nine hours. So `POST /build` is out. If the theatre could start the
-build, the theatre would be doing the work. **A stagehand is not on stage.**
+It is a **command first**, and Backstage is a front on that command, not a
+second way to build. Starting a build is a write, so the plain viewer cannot do
+it: no route, no button, and `test_the_base_install_has_no_write_verbs` fails
+if one appears. Installing `[stagehand]` is what mounts Backstage, and it is
+gated on importing the builder itself — the extra adds a dependency, not a
+file, so the import is the assertion. What Backstage's *run* does is exactly
+what the command does: fork the same argv, in a configured stage, with the log
+landing in the run. If the theatre could build in its own process, the theatre
+would be doing the work. **A stagehand is not on stage.**
 
 What stagehand runs is the literal command from ms-moe-maker's README:
 
@@ -166,7 +198,7 @@ nothing and that's the bargain.
 
 ```bash
 seren-theatre-stagehand --check          # is it usable? which command will run?
-seren-theatre-stagehand r.yaml -- --dryrun --allow-refusals
+seren-theatre-stagehand r.yaml -- --dryrun     # after -- goes to the builder
 ```
 
 `--check` reports `is_documented_command`. If `ms-moe-maker` isn't on PATH, stagehand
@@ -174,8 +206,10 @@ falls back to `python -m ms_moe_maker` — that works, but it quietly voids the
 "every run tests the hand-run path" guarantee, so it's reported rather than
 hidden.
 
-The service can *say* whether stagehand is installed (`stagehand` on `/`) and
-can never *use* it. That asymmetry is the point.
+The plain service can *say* whether a stagehand is installed (`stagehand` on
+`/`) and can never *use* it. Only the `[stagehand]` install can, and it says so
+too: `backstage: true` and a non-empty `write_routes` on the same document.
+Which room you are standing in is never a thing you have to infer.
 
 ---
 

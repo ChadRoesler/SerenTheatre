@@ -28,10 +28,10 @@ Postel as kindness, applied to config.
 ON THE HOST DEFAULT: 127.0.0.1. Theatre reads raw training logs off disk and
 re-serves them over HTTP, and a training log holds absolute paths, hostnames
 and occasionally a snippet of a corpus. That is not something to put on the
-LAN by accident. Widen it yourself, on purpose, if you mean to. Adopting the
-shared ServerConfig makes keeping that promise an ACTIVE job - see
-_server_from below, which exists entirely because the shared default is
-0.0.0.0.
+LAN by accident. Widen it yourself, on purpose, if you mean to. Since
+seren-meninges 2.3.0 the shared ServerConfig defaults to loopback too, and
+_server_from below passes DEFAULT_HOST explicitly so the choice is written
+here, in the leaf, rather than inherited.
 
 ON READ-ONLY: Theatre never writes into a stage. It is a room with seats, not
 a workbench - the whole point is that you can point it at a live run and be
@@ -384,9 +384,8 @@ class ArchiveConfig:
 class TheatreConfig:
     """The whole service: server + tls + updates + the stages it watches."""
 
-    # NOT `field(default_factory=ServerConfig)`. The shared ServerConfig
-    # defaults to host="0.0.0.0", so the bare default would publish training
-    # logs on the LAN - see _server_from for the full note.
+    # Spelled out rather than `field(default_factory=ServerConfig)` so the
+    # port is Theatre's and the host is stated here, not inherited.
     server: ServerConfig = field(
         default_factory=lambda: ServerConfig(host=DEFAULT_HOST, port=DEFAULT_PORT))
     tls: TlsConfig = field(default_factory=TlsConfig)
@@ -463,36 +462,24 @@ class TheatreConfig:
 
 
 def _server_from(data: Dict[str, Any]) -> ServerConfig:
-    """The shared server block, with Theatre's loopback default restored.
+    """The shared server block with Theatre's port and Theatre's loopback host.
 
-    THIS FUNCTION IS A GUARD, and deleting it would be a security regression
-    that no test failure would obviously explain.
+    This used to be a guard that undid the shared library's 0.0.0.0 fallback
+    by hand, because `from_dict` had a `default_port` parameter and no
+    `default_host`. seren-meninges 2.3.0 added the parameter and moved the
+    library default to loopback, so the guard is now the one call it always
+    wanted to be. It stays a function so both callers (load_config and the
+    __post_init__ coercion) go through the same line, and so the host choice
+    is written HERE, in the leaf that made it, rather than inherited.
 
-    `ServerConfig.from_dict` spells its host fallback `d.get("host", "0.0.0.0")`
-    - a hardcoded literal with no `default_host` parameter to override it, in
-    contrast to `default_port`, which is parameterised precisely because ports
-    are leaf-owned. Hosts are leaf-owned too, and Theatre is the first leaf
-    where the family default is the wrong answer: eight services want the LAN,
-    this one is showing you the inside of your own training runs.
-
-    So a config file with no `host:` key would come back 0.0.0.0 and Theatre
-    would bind every interface while its own docstring, its installer comment
-    and its tests all promised loopback. Nothing would look broken. That is
-    the failure mode worth twelve lines of comment.
-
-    The right long-term fix is a `default_host` parameter on the shared
-    from_dict, matching default_port. That is a Meninges change and a family
-    version bump, so it is Chad's call, not something to slip in from a leaf.
+    An explicit `host: 0.0.0.0` in the yaml is still honoured without
+    argument - widening should be something you did, not something that
+    happened.
     """
     raw = data.get("server")
-    raw = raw if isinstance(raw, dict) else {}
-    srv = ServerConfig.from_dict(raw, default_port=DEFAULT_PORT)
-    # Only when the operator did not say. An explicit `host: 0.0.0.0` is a
-    # deliberate act and is honoured without argument - the point is that
-    # widening should be something you did, not something that happened.
-    if not raw.get("host"):
-        srv.host = DEFAULT_HOST
-    return srv
+    return ServerConfig.from_dict(raw if isinstance(raw, dict) else {},
+                                  default_port=DEFAULT_PORT,
+                                  default_host=DEFAULT_HOST)
 
 
 def _candidate_paths(explicit: Optional[str]) -> List[Path]:

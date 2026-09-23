@@ -257,10 +257,28 @@ def find_recipe(run_dir: Path) -> Optional[Path]:
     training pipeline, so both ends spell it and a contract test compares them.
     """
     try:
-        found = sorted(Path(run_dir).glob(RECIPE_STEM + ".*"))
+        found = sorted(_recipe_copies(Path(run_dir)))
     except OSError:
         return None
     return found[0] if found else None
+
+
+def _recipe_copies(run_dir: Path) -> List[Path]:
+    """Every file in the run directory that is the recipe copy, any suffix.
+
+    THE BARE STEM COUNTS. The writer keeps the ORIGINAL suffix and invents none,
+    so a recipe read from a file with no extension lands as `msmoe-recipe` with
+    nothing after it - and a glob on `stem.*` never saw it. Same fix as the
+    writer's own finder, made the same day, because the two are spelled
+    separately on purpose and this is the price of that: a lookup that drifts
+    is a run whose recipe is on disk and reported missing.
+
+    `msmoe-recipe-notes.txt` does NOT count. The name has to be the stem
+    exactly, or the stem plus one suffix - a prefix match would pick up
+    whatever a person left beside the manifest.
+    """
+    return [p for p in run_dir.glob(RECIPE_STEM + "*")
+            if p.name == RECIPE_STEM or p.name.startswith(RECIPE_STEM + ".")]
 
 
 def read(run_dir: Path) -> Optional[Manifest]:
