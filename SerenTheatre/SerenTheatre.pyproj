@@ -64,7 +64,6 @@
     <Compile Include="tests\test_results.py" />
     <Compile Include="tests\test_results_contract.py" />
     <Compile Include="tests\test_results_end_to_end.py" />
-    <Compile Include="tests\test_rung_discovery.py" />
     <Compile Include="tests\test_sample_config.py" />
     <Compile Include="tests\test_stage_contract.py" />
     <Compile Include="tests\test_sweep.py" />
