@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "seren-theatre"
 dynamic = ["version"]
 description = "Watch a model being made. Read-only viewer over training logs and artifacts."
-license = "GPL-3.0-only"
+license = "AGPL-3.0-or-later"
 requires-python = ">=3.10"
 authors = [{ name = "Chad Roesler" }]
 readme = "README.md"
