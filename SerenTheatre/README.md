@@ -205,6 +205,6 @@ and worth having; it just belongs on the side that owns the installer. Something
 
 ## Licence
 
-GPL-3.0-only. Same as the rest of the family.
+AGPL-3.0-or-later. Same as the rest of the family.
 
 *Rip it and win.* 🌭🔧
