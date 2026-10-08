@@ -176,7 +176,7 @@ jobs:
           path: SerenTheatre/dist/
 
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: SerenTheatre/dist/*
           generate_release_notes: true
