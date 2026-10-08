@@ -157,7 +157,7 @@ class TestTheInstallerCanVerifyThisPackage:
     """The installer runs this exact check and calls `die` if it fails.
 
     Not a paraphrase of it - the same import and the same key list, so this test
-    fails in CI rather than on the user's Jetson halfway through an install.
+    fails in CI rather than on someone's Jetson halfway through an install.
     """
 
     REQUIRED = ("name", "port", "group", "accent")

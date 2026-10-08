@@ -2520,7 +2520,7 @@ function bsExportFailedHtml(err) {
     // recipe is wrong". The exporter loaded its own output back, resolved it,
     // and found a field that did not survive the round trip - so it wrote
     // nothing rather than hand somebody a bundle that rebuilds to a different
-    // model. Rendering it as a user error would send the user hunting his recipe
+    // model. Rendering it as a user error would send the person hunting their recipe
     // for a bug that is in ms-moe-maker's knob table.
     return '<div class="drift">'
       + '<div class="dr-head">The exporter refused its own output.</div>'

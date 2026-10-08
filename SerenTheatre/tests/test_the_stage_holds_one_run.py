@@ -1,6 +1,6 @@
 """What belongs on the stage: the run there is something to DO about.
 
-THE BRIEF, in the user's words: you eyeball the stage and go "cool something's
+THE BRIEF: you eyeball the stage and go "cool something's
 cooking", or "oh no something failed" and investigate. Everything else is
 history, and history has a tab.
 

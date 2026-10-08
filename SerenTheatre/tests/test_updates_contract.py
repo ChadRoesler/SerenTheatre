@@ -9,7 +9,7 @@ than only in a workflow.
 
 WHAT IS ASSERTED HERE IS THE INVARIANT, NOT THE OBSERVATION. Notably absent:
 any assertion that a particular install shape reports "unavailable". That
-assertion was wrong when a sibling made it and cost the user most of a day - the
+assertion was wrong when a sibling made it and cost most of a day - the
 [updates] extra GUARANTEES httpx is present, but its absence guarantees
 nothing, since six of nine services depend on httpx directly and
 sentence-transformers drags it in anyway. Update checking simply works without
@@ -140,8 +140,7 @@ def test_the_env_off_switch_is_honoured(tmp_path, monkeypatch):
 
 
 def test_updates_defaults_to_on():
-    """On by default, off by explicit choice. the user's call, and the security
-    argument won it: a friend running a stale service with a known problem is
+    """On by default, off by explicit choice. The security argument won it: a friend running a stale service with a known problem is
     worse than an outbound HTTPS call they did not specifically request."""
     assert TheatreConfig().updates.enabled is True
 

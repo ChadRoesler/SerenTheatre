@@ -290,7 +290,7 @@ assert.ok(!T.stagesHtml(board(0)).includes(ROW),
 
 // ── the stage holds what there is something to DO about ─────────────────────
 //
-// The brief, in the user's words: you eyeball the stage and go "cool something's
+// The brief: you eyeball the stage and go "cool something's
 // cooking" or "oh no something failed, investigate". Everything else is history
 // and history has a tab. So a clean finish comes OFF the stage, and every other
 // state stays - `stalled` most of all, since that is the one you want to catch.

@@ -33,7 +33,7 @@ import pytest
 from seren_theatre import sources
 from seren_theatre.config import StageConfig
 
-# the user's real config, verbatim, on the night the nano run vanished.
+# A real config, verbatim, from the night a run vanished.
 REAL_GLOBS = ["msmoe_*", "gauntlet-runs/*"]
 
 

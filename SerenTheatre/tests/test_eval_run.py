@@ -184,7 +184,7 @@ class TestWhatCountsAsSomethingToEvaluate:
         by hand as `fraunkenstein_agent_final` - a name ms-moe-maker stopped
         writing during the decomposition. So the whole class agreed with a
         shape no real run produces, and the eval button would have refused
-        every genuine build on the user's box while the suite sat green.
+        every genuine build on a real box while the suite sat green.
 
         This builds the run from ms_moe_maker's OWN constants and asserts the
         endpoint launches. It skips on a plain viewer install, where there is

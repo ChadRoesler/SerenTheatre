@@ -11,7 +11,7 @@ footprints across the one thing built on nobody reading it. Its missing
 middleware is the mechanism, not an omission.
 
 Theatre is the opposite kind of thing: a TOOL, meant to be installed by people
-who are not the user so they can watch their own Ms.MoE get made. That makes it
+who are not its author so they can watch their own Ms.MoE get made. That makes it
 public-service shaped - Probe's shape - so it takes the family's shared
 `server:` block, the bearer-token pointers, the TLS posture, and the request
 log. Same surface, same knobs, same names as Probe/Workbench/Lodestar/SCC.
@@ -184,7 +184,7 @@ class UpdatesConfig:
     httpx", which transitive dependencies decide, not the operator - so it was
     silently ON for six of nine services and OFF for the rest, by accident.
 
-    the user's call: "if we dont guarentee opt-in its not opt". So it is on by
+    The call: if opt-in is not guaranteed, it is not opt-in. So it is on by
     default and the OFF SWITCH IS GUARANTEED - `updates.enabled: false` here,
     or SEREN_THEATRE_UPDATES_ENABLED=false in the environment. Both are
     honoured, which is the whole point of writing them down.
