@@ -92,9 +92,9 @@ class TestWhatACommandValueMeans:
 class TestResolvingAnArgvCommand:
 
     def test_the_launcher_is_verified_and_the_rest_passed_through(self, launcher):
-        found = resolve_with(command=[str(launcher), "spark128gb",
+        found = resolve_with(command=[str(launcher), "node-d",
                                       "/mnt/nvme/msMoEMaker/bin/ms-moe-maker"])
-        assert found.argv == [str(launcher), "spark128gb",
+        assert found.argv == [str(launcher), "node-d",
                               "/mnt/nvme/msMoEMaker/bin/ms-moe-maker"]
         assert "argv" in found.source
 

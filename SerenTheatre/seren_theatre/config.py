@@ -276,7 +276,7 @@ class PipelineConfig:
     # different things on purpose:
     #
     #     command: /usr/local/bin/ms-moe-maker          # one file, verified
-    #     command: ["ssh", "spark128gb", "/mnt/nvme/msMoEMaker/bin/ms-moe-maker"]
+    #     command: ["ssh", "node-d", "/mnt/nvme/msMoEMaker/bin/ms-moe-maker"]
     #
     # A string is NEVER split on whitespace. Splitting it would make
     # `command: /opt/Ms MoE/bin/ms-moe-maker` mean something nobody wrote, and

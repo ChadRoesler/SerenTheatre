@@ -177,7 +177,7 @@ def resolve() -> Resolution:
 
     # ── argv: a command whose first word is a LAUNCHER ──────────────────────
     #
-    # `["ssh", "spark128gb", "/mnt/nvme/msMoEMaker/bin/ms-moe-maker"]`. The
+    # `["ssh", "node-d", "/mnt/nvme/msMoEMaker/bin/ms-moe-maker"]`. The
     # trailing path is on ANOTHER BOX, so the single-path branch below - which
     # earns its trust by calling is_file() - cannot say anything true about it.
     # Verifying only what is local and passing the rest through verbatim is the
