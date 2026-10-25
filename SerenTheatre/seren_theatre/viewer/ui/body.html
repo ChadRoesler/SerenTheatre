@@ -50,8 +50,8 @@
         <!-- A plain file input, not a drop zone: this has to work over an SSH
              tunnel on a headless box, same reason the recipe editor is a
              textarea and Starwright is a TUI. -->
-        <input type="file" id="rep-file" accept=".zip" hidden>
-        <button id="rep-import">Import a bundle…</button>
+        <label class="hint" for="rep-file">import a bundle</label>
+        <input type="file" id="rep-file" accept=".zip" title="Import a prompt-book bundle (.zip)">
         <button id="rep-reload" title="re-read the shelf">Refresh</button>
     </div>
     <div id="rep-out"></div>

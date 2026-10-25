@@ -234,7 +234,7 @@ const base = (p) => String(p).split(/[\\/]/).pop() || String(p);
 function card(key, title, badge, sub, body, startCollapsed) {
     const collapsed = COLLAPSED.has(key) || (startCollapsed && !COLLAPSED.has('!' + key));
     return `<div class="card collapsible ${collapsed ? 'collapsed' : ''}" data-key="${escapeHtml(key)}">
-        <h3><span class="twisty">▾</span>${title}${badge || ''}</h3>
+        <h3><span class="twisty seren-chev"></span>${title}${badge || ''}</h3>
         ${sub ? `<div class="sub">${sub}</div>` : ''}
         <div class="card-body">${body}</div>
     </div>`;
@@ -337,7 +337,7 @@ function renderSteps(key, m, log) {
         return `<div class="step collapsible ${cls} ${collapsed ? 'collapsed' : ''}"
                      data-key="${escapeHtml(k)}">
             <div class="step-head">
-                <span class="twisty">▾</span>
+                <span class="twisty seren-chev"></span>
                 <span class="label">${escapeHtml(s.label)}</span>
                 <span class="meta"${
                     tickData(`step-meta:${key}:${s.id}`, right)
@@ -564,7 +564,7 @@ function pbWhy(key, knob) {
           + `<code>${breakablePath(knob.derived_from)}</code></div>`
         : '';
     return `<dd class="pb-why"><details>`
-        + `<summary><span aria-hidden="true">?</span>`
+        + `<summary class="no-chev"><span aria-hidden="true">?</span>`
         + `<span class="vh">what is ${escapeHtml(key)}?</span></summary>`
         + `<div class="pb-why-body"><div class="pb-why-sum">${
             escapeHtml(knob.summary)}</div>${derived}</div>`
@@ -2600,7 +2600,6 @@ document.addEventListener('click', async (e) => {
         await loadRepertoire();
         return;
     }
-    if (id === 'rep-import') { $('rep-file').click(); return; }
     if (e.target && e.target.classList
             && e.target.classList.contains('rep-open')) {
         const book = e.target.getAttribute('data-book');

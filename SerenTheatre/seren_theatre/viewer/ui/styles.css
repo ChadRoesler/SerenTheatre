@@ -17,13 +17,8 @@
  */
 
 :root {
-    --bg: #14141f;
-    --bg-2: #1a1a2e;
-    --panel: #1f2036;
-    --panel-2: #262844;
-    --line: #33365a;
-    --muted: #9aa0c8;
-    --faint: #6c7199;
+    /* the walls (--bg, --bg-2, --panel, --panel-2, --line, --muted, --faint)
+       come from the shell, tinted 5% by this service's accent (24 Oct 2026) */
     --ok: #3fb950;      /* done / healthy */
     --warn: #d2a93f;    /* skipped-with-a-note / stalled */
     --danger: #f0796a;  /* failed */
@@ -80,19 +75,21 @@ body { font-size: 14px; }
 }
 
 /* The twisty. Rotates rather than swapping glyphs, so it animates and so the
-   collapsed state is legible at a glance across a stack of ten runs. */
+   collapsed state is legible at a glance across a stack of ten runs. It is
+   the family's one chevron (seren-chev, from the shell, 24 Oct 2026): down
+   while open, right when shut. */
 .twisty {
     display: inline-block;
     transition: transform .12s ease;
     color: var(--faint);
-    font-size: 10px;
+    transform: rotate(45deg);
 }
-.card.collapsed .twisty { transform: rotate(-90deg); }
+.card.collapsed .twisty { transform: rotate(-45deg); }
 /* The step's own twisty needs its own rule: the one above is a DESCENDANT
    selector from when there was only one level of collapsible, and it turns
    every twisty inside a shut card - which is invisible, because the card is
    shut. A step inside an OPEN card is the case that matters. */
-.step.collapsed > .step-head > .twisty { transform: rotate(-90deg); }
+.step.collapsed > .step-head > .twisty { transform: rotate(-45deg); }
 .card.collapsed > .sub,
 .card.collapsed > .card-body { display: none; }
 @media (prefers-reduced-motion: reduce) {
