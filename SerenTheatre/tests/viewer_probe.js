@@ -475,7 +475,9 @@ assert.ok(html.includes('steps x tokens /<wbr> headroom'),
 // REACHABLE WITHOUT A MOUSE. A native disclosure, not a hover tooltip.
 assert.ok(html.includes('<dd class="pb-why"><details>'),
     'the explanation is not a <details>, so it is hover-only or script-only');
-assert.ok(html.includes('<summary>'), 'the disclosure has no summary to focus');
+assert.ok(/<summary[\s>]/.test(html), 'the disclosure has no summary to focus');
+// the ? is a button of its own, so it opts out of the family's fold chevron (24 Oct 2026)
+assert.ok(html.includes('<summary class="no-chev">'), 'the ? bubble grew a chevron beside it');
 
 // The rule itself, at the boundaries the contract names.
 assert.strictEqual(T.knobFor(undefined, 'x'), null, 'no glossary at all');
