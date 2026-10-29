@@ -28,7 +28,7 @@ dependencies = [
     # strangers install: when someone else's viewer shows them the wrong thing,
     # the request log is how they find out why, and an optional diagnostic is
     # missing precisely on the box that needed it.
-    "seren-sinew>=1.0.0,<6",
+    "seren-sinew>=5.3.0,<6",  # 5.3.0: request ids carried to the next hop (request_id_hooks / request_id_scope), seren_sinew.atomic
 ]
 
 [project.optional-dependencies]

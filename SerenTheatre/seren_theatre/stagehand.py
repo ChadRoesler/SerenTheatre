@@ -52,6 +52,8 @@ import time
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from seren_sinew.atomic import write_json
+
 # ONE DEFINITION OF WHAT A COMMAND STRING MEANS. See config.as_argv: the
 # reading end has to coerce too, because list() on a bare string yields
 # its characters and every caller predating the argv field passes one.
@@ -603,16 +605,9 @@ def _write_marker(cwd: Path, payload: Dict[str, Any]) -> Optional[Path]:
     as failed because the directory went read-only.
     """
     target = Path(cwd) / DETACHED_MARKER
-    tmp = target.with_name(f"{DETACHED_MARKER}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(tmp, target)
-        return target
+        return write_json(target, payload)
     except OSError:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
         return None
 
 
