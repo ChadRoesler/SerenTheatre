@@ -14,8 +14,8 @@
 
 const $ = (id) => document.getElementById(id);
 
-let TIMER = null;
-let REFRESH_MS = 5000;
+// The poll: the shell's watch(), started at the bottom of "the loop".
+let WATCH = null;
 
 // Which cards the operator collapsed, by key, so a refresh every 5s does not
 // keep re-opening what they just shut. In memory only - no storage APIs.
@@ -68,8 +68,6 @@ const CLOCK_DERIVED = new Set([
     'quiet_for', 'manifest_quiet_for', 'newest_activity_for',
     'elapsed',
 ]);
-
-let LAST_SIGNATURE = null;
 
 // The payload, minus the clock, as a stable string.
 //
@@ -1425,65 +1423,71 @@ function renderLogs(state) {
 
 // -- the loop ---------------------------------------------------------------
 
-async function load() {
-    try {
-        const state = await api('/api/state');
-        clearError();
+// The loop itself is the SerenMeninges shell's watch(): it asks, compares the
+// answer's signature with the last one painted, and calls these. What is ours
+// is what "the same answer" means here (structuralSignature, above) and what
+// each half does.
 
-        const runs = state.stages.flatMap((s) => s.runs || []);
-        const logs = state.stages.flatMap((s) => s.logs || []);
-        const running = runs.filter(
-            (r) => r.manifest && r.manifest.state === 'running').length;
+// Every answer, changed or not: the things that follow the clock.
+function heardState(state, changed) {
+    clearError();
 
-        // The pill answers a question you actually have: how many runs are
-        // here, and is anything moving?
-        $('runs-pill').textContent = running
-            ? `${runs.length} runs · ${running} live`
-            : `${runs.length} run${runs.length === 1 ? '' : 's'}`;
-        $('age-pill').textContent = `${state.took_ms} ms`;
-        $('age-pill').title = `server read the disk in ${state.took_ms} ms`;
+    const runs = state.stages.flatMap((s) => s.runs || []);
+    const logs = state.stages.flatMap((s) => s.logs || []);
+    const running = runs.filter(
+        (r) => r.manifest && r.manifest.state === 'running').length;
 
-        // Counts on the tabs, so an empty tab is distinguishable from a broken
-        // one WITHOUT clicking it.
-        $('count-stages').textContent = runs.length ? `(${runs.length})` : '';
-        $('count-logs').textContent = logs.length ? `(${logs.length})` : '(0)';
+    // The pill answers a question you actually have: how many runs are
+    // here, and is anything moving?
+    $('runs-pill').textContent = running
+        ? `${runs.length} runs · ${running} live`
+        : `${runs.length} run${runs.length === 1 ? '' : 's'}`;
+    $('age-pill').textContent = `${state.took_ms} ms`;
+    $('age-pill').title = `server read the disk in ${state.took_ms} ms`;
 
-        // (1) The whole point. During a 58-minute fine-tune the manifest is not
-        // rewritten once, so ~700 consecutive polls carry a structurally
-        // identical board - and all 700 used to rebuild the page and throw the
-        // reader back to the top of whatever they were reading.
-        const signature = structuralSignature(state);
-        if (signature === LAST_SIGNATURE) {
-            retick(state);
-        } else {
-            renderStages(state);
-            renderLogs(state);
-            // Set AFTER the render, so a renderer that threw leaves the next
-            // poll trying again rather than believing the page is current.
-            LAST_SIGNATURE = signature;
-        }
+    // Counts on the tabs, so an empty tab is distinguishable from a broken
+    // one WITHOUT clicking it.
+    $('count-stages').textContent = runs.length ? `(${runs.length})` : '';
+    $('count-logs').textContent = logs.length ? `(${logs.length})` : '(0)';
 
-        if (state.refresh_seconds) REFRESH_MS = state.refresh_seconds * 1000;
-    } catch (e) {
-        showError(`⚠ Could not read <code>/api/state</code>: ${escapeHtml(
-            (e && e.message) || String(e))}`);
-    }
+    // (1) The whole point. During a 58-minute fine-tune the manifest is not
+    // rewritten once, so ~700 consecutive polls carry a structurally
+    // identical board - and all 700 used to rebuild the page and throw the
+    // reader back to the top of whatever they were reading. Those polls land
+    // here and tick the clock-derived numbers in place.
+    if (!changed) retick(state);
+
+    if (state.refresh_seconds && WATCH) WATCH.every(state.refresh_seconds * 1000);
 }
+
+// Only when the structure changed. watch() records the signature AFTER this
+// returns, so a renderer that threw leaves the next poll trying again rather
+// than believing the page is current.
+function paintState(state) {
+    renderStages(state);
+    renderLogs(state);
+}
+
+function stateUnreadable(e) {
+    showError(`⚠ Could not read <code>/api/state</code>: ${escapeHtml(
+        (e && e.message) || String(e))}`);
+}
+
+// Ask now rather than at the next tick.
+function load() { return WATCH ? WATCH.check() : Promise.resolve(); }
 
 function reload() { load(); }
 
-function schedule() {
-    if (TIMER) clearInterval(TIMER);
-    // Poll only while the tab is visible. A dashboard left open on a second
-    // monitor overnight should not be re-reading log tails every five seconds
-    // on the box that is training - the room must never be the reason the
-    // machine is busy.
-    TIMER = setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
-}
-
-document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
-
-load().then(schedule);
+// whileVisible: poll only while the tab is visible, and once the moment it is
+// shown again. A dashboard left open on a second monitor overnight should not
+// be re-reading log tails every five seconds on the box that is training -
+// the room must never be the reason the machine is busy.
+WATCH = watch('/api/state', 5000, paintState, {
+    signature: structuralSignature,
+    each: heardState,
+    onError: stateUnreadable,
+    whileVisible: true,
+});
 
 
 // -- previous surgeries -----------------------------------------------------

@@ -59,13 +59,22 @@ globalThis.document = {
 // The shell's, not ours - stubbed so a click can be observed arriving at it.
 globalThis.SHOWN = [];
 globalThis.showTab = (id) => { globalThis.SHOWN.push(id); };
-// The module-level `load().then(schedule)` and `loadBackstage()` both run at
-// import. Handing them a rejected promise sends each down its own catch, which
-// is a path worth exercising anyway.
+// The module-level `loadBackstage()` runs at import. Handing it a rejected
+// promise sends it down its own catch, which is a path worth exercising anyway.
 globalThis.api = () => Promise.reject(new Error('shimmed: no server here'));
-// schedule() arms a real 5s interval and would hold the event loop open for
-// ever, so the probe would pass and then hang. Neutered rather than cleared
-// afterwards: a live timer is a handle this file has no business owning.
+// The poll is the shell's watch() (SerenMeninges 6.2), and its behaviour is
+// tested there. What is OURS is how it is called, so the shim records the call
+// and the checks at the bottom of this file read it back: no timer is armed,
+// so nothing holds the event loop open.
+globalThis.WATCHED = [];
+globalThis.watch = (url, ms, paint, opts) => {
+    globalThis.WATCHED.push({ url, ms, paint, opts });
+    const stop = () => {};
+    stop.check = () => Promise.resolve();
+    stop.every = (n) => { stop.rate = n; };
+    globalThis.WATCHED[globalThis.WATCHED.length - 1].stop = stop;
+    return stop;
+};
 globalThis.setInterval = () => 0;
 globalThis.clearInterval = () => {};
 
@@ -1708,3 +1717,31 @@ assert.ok(bareSweep.includes('changed several inputs'),
     'the empty state must say what WAS examined and rejected, or it reads as '
     + '"your history is useless" when it means "change one thing at a time"');
 
+
+// -- the poll: the shell's watch(), called the way this page needs -----------
+//
+// watch() itself is SerenMeninges' and is tested there. These pin the three
+// things that are ours and that fail silently: which signature it compares,
+// that a hidden tab does not poll, and that an unchanged board is ticked in
+// place rather than rebuilt.
+const W = globalThis.WATCHED.find((w) => w.url === '/api/state');
+assert.ok(W, 'the page never handed /api/state to the shell\'s watch()');
+assert.strictEqual(W.opts.signature, T.structuralSignature,
+    'watch() is not comparing the STRUCTURAL signature; with the default '
+    + '(the whole JSON) the clock-derived fields differ on every poll and the '
+    + 'page goes back to rebuilding itself every five seconds');
+assert.strictEqual(W.opts.whileVisible, true,
+    'the poll no longer stops while the tab is hidden - the room must never '
+    + 'be the reason the machine is busy');
+assert.strictEqual(typeof W.opts.onError, 'function',
+    'a failed read of /api/state has nowhere to be shown');
+
+el('stages-body').innerHTML = 'UNTOUCHED';
+W.opts.each(board(0), false);
+assert.strictEqual(el('stages-body').innerHTML, 'UNTOUCHED',
+    'an unchanged board rebuilt the stages - that is the scroll jump');
+assert.strictEqual(W.stop.rate, 5000,
+    'the server\'s refresh_seconds no longer sets the poll rate');
+W.paint(board(0));
+assert.notStrictEqual(el('stages-body').innerHTML, 'UNTOUCHED',
+    'a changed board did not redraw the stages');
